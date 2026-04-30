@@ -23,3 +23,19 @@ export const protectRoute = async (req, res, next) => {
     res.status(401).json({ message: "Unauthorized" });
   }
 };
+
+export const requireMaintenanceKey = (req, res, next) => {
+  const configuredKey = process.env.MAINTENANCE_API_KEY;
+
+  if (!configuredKey) {
+    return res.status(503).json({ message: "Maintenance route is not configured" });
+  }
+
+  const providedKey = req.headers["x-maintenance-key"];
+
+  if (providedKey !== configuredKey) {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+
+  next();
+};

@@ -57,6 +57,11 @@ export async function getUserFriends() {
   return response.data;
 }
 
+export async function removeFriend(friendId) {
+  const response = await axiosInstance.delete(`/users/friends/${friendId}`);
+  return response.data;
+}
+
 export async function getRecommendedUsers() {
   const response = await axiosInstance.get("/users");
   return response.data;
@@ -117,5 +122,26 @@ export async function uploadChatAttachment(file) {
     },
   });
 
+  return response.data;
+}
+
+export async function detectImageMessage(messageId, options = {}) {
+  const response = await axiosInstance.post(`/ai/messages/${messageId}/detect-image`, {
+    force: Boolean(options.force),
+  });
+  return response.data;
+}
+
+export async function detectTextMessage(messageId, options = {}) {
+  const response = await axiosInstance.post(`/ai/messages/${messageId}/detect-text`, {
+    force: Boolean(options.force),
+  });
+  return response.data;
+}
+
+export async function detectLinkMessage(messageId, options = {}) {
+  const response = await axiosInstance.post(`/ai/messages/${messageId}/detect-link`, {
+    force: Boolean(options.force),
+  });
   return response.data;
 }

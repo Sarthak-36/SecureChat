@@ -7,9 +7,11 @@ import toast from "react-hot-toast";
 import AvatarImage from "../components/AvatarImage";
 import useAuthUser from "../hooks/useAuthUser";
 import { deleteAccount, updateProfile, uploadProfilePicture } from "../lib/api";
+import { useThemeStore } from "../store/useThemeStore";
 
 const SettingsPage = () => {
   const { authUser } = useAuthUser();
+  const { theme } = useThemeStore();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const fileInputRef = useRef(null);
@@ -194,7 +196,11 @@ const SettingsPage = () => {
               </div>
 
               <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:items-center sm:justify-between">
-                <button className="btn btn-primary" type="submit" disabled={isSaving}>
+                <button
+                  className={theme === "light" ? "btn btn-light-save" : "btn btn-primary"}
+                  type="submit"
+                  disabled={isSaving}
+                >
                   <SaveIcon className="size-4" />
                   {isSaving ? "Saving..." : "Save Changes"}
                 </button>

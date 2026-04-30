@@ -11,6 +11,7 @@ import { randomUUID } from "crypto";
 import authRoutes from "./routes/auth.route.js";
 import userRoutes from "./routes/user.route.js";
 import chatRoutes from "./routes/chat.route.js";
+import aiRoutes from "./routes/ai.route.js";
 import { connectDB, query } from "./lib/db.js";
 import { parseCookies, verifyAuthToken, verifyWebSocketToken } from "./lib/auth.js";
 import { getUserById } from "./lib/users.js";
@@ -28,6 +29,7 @@ const backendRoot = path.resolve(__dirname, "..");
 const socketsByUserId = new Map();
 const conversationSubscribers = new Map();
 const callRooms = new Map();
+const presenceSubscribers = new Map();
 
 const getConversationId = (userA, userB) => [userA, userB].sort().join(":");
 
@@ -63,10 +65,39 @@ const removeFromSetMap = (map, key, socket) => {
   }
 };
 
+const replacePresenceSubscriptions = (socket, userIds) => {
+  for (const userId of socket.subscriptions.presenceUsers) {
+    removeFromSetMap(presenceSubscribers, userId, socket);
+  }
+
+  socket.subscriptions.presenceUsers.clear();
+
+  for (const userId of userIds) {
+    if (!userId || userId === socket.userId) continue;
+    socket.subscriptions.presenceUsers.add(userId);
+    joinSetMap(presenceSubscribers, userId, socket);
+  }
+};
+
 const sendJson = (socket, payload) => {
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(payload));
   }
+};
+
+const broadcastToUser = (userId, payload) => {
+  const sockets = socketsByUserId.get(userId);
+  if (!sockets) return 0;
+
+  let deliveredCount = 0;
+  for (const socket of sockets) {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(payload));
+      deliveredCount += 1;
+    }
+  }
+
+  return deliveredCount;
 };
 
 const broadcastToConversation = (conversationId, payload) => {
@@ -89,6 +120,19 @@ const broadcastToCallRoom = (callId, senderSocket, payload) => {
   }
 };
 
+const broadcastPresenceUpdate = (userId, isOnline) => {
+  const sockets = presenceSubscribers.get(userId);
+  if (!sockets) return;
+
+  for (const socket of sockets) {
+    sendJson(socket, {
+      type: "presence_updated",
+      userId,
+      isOnline,
+    });
+  }
+};
+
 app.use(
   cors({
     origin: CLIENT_URL,
@@ -103,11 +147,13 @@ app.use("/uploads", express.static(path.join(backendRoot, "uploads")));
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/chat", chatRoutes);
+app.use("/api/ai", aiRoutes);
 
 wss.on("connection", (socket) => {
   socket.subscriptions = {
     conversations: new Set(),
     calls: new Set(),
+    presenceUsers: new Set(),
   };
 
   socket.on("message", async (rawData) => {
@@ -117,18 +163,76 @@ wss.on("connection", (socket) => {
       switch (payload.type) {
         case "join_conversation": {
           if (!socket.userId || !payload.conversationId) return;
-          await query(
+          const readResult = await query(
             `
               INSERT INTO conversation_reads (user_id, conversation_id, last_read_at)
               VALUES ($1, $2, NOW())
               ON CONFLICT (user_id, conversation_id)
               DO UPDATE SET last_read_at = EXCLUDED.last_read_at
+              RETURNING last_read_at
             `,
             [socket.userId, payload.conversationId]
           );
           socket.subscriptions.conversations.add(payload.conversationId);
           joinSetMap(conversationSubscribers, payload.conversationId, socket);
           sendJson(socket, { type: "joined_conversation", conversationId: payload.conversationId });
+          broadcastToConversation(payload.conversationId, {
+            type: "conversation_read",
+            conversationId: payload.conversationId,
+            userId: socket.userId,
+            lastReadAt: readResult.rows[0]?.last_read_at || new Date().toISOString(),
+          });
+          break;
+        }
+
+        case "subscribe_presence": {
+          if (!socket.userId) return;
+
+          const requestedUserIds = Array.isArray(payload.userIds)
+            ? [...new Set(payload.userIds.filter((userId) => typeof userId === "string"))]
+            : [];
+
+          replacePresenceSubscriptions(socket, requestedUserIds);
+
+          sendJson(socket, {
+            type: "presence_snapshot",
+            onlineUserIds: requestedUserIds.filter((userId) => socketsByUserId.has(userId)),
+          });
+          break;
+        }
+
+        case "mark_conversation_read": {
+          if (!socket.userId || !payload.conversationId) return;
+
+          const readResult = await query(
+            `
+              INSERT INTO conversation_reads (user_id, conversation_id, last_read_at)
+              VALUES ($1, $2, NOW())
+              ON CONFLICT (user_id, conversation_id)
+              DO UPDATE SET last_read_at = EXCLUDED.last_read_at
+              RETURNING last_read_at
+            `,
+            [socket.userId, payload.conversationId]
+          );
+
+          broadcastToConversation(payload.conversationId, {
+            type: "conversation_read",
+            conversationId: payload.conversationId,
+            userId: socket.userId,
+            lastReadAt: readResult.rows[0]?.last_read_at || new Date().toISOString(),
+          });
+          break;
+        }
+
+        case "typing_start":
+        case "typing_stop": {
+          if (!socket.userId || !payload.conversationId) return;
+
+          broadcastToConversation(payload.conversationId, {
+            type: payload.type,
+            conversationId: payload.conversationId,
+            userId: socket.userId,
+          });
           break;
         }
 
@@ -161,6 +265,44 @@ wss.on("connection", (socket) => {
           broadcastToConversation(conversationId, {
             type: "chat_message",
             message: serializeMessage(savedMessage.rows[0]),
+          });
+          break;
+        }
+
+        case "call_invite": {
+          if (!socket.userId || !payload.recipientId || !payload.callId) return;
+
+          const deliveredCount = broadcastToUser(payload.recipientId, {
+            type: "incoming_call_invite",
+            callId: payload.callId,
+            fromUserId: socket.userId,
+            fromUserName: socket.user?.fullName || "Someone",
+            fromUserProfilePic: socket.user?.profilePic || "/default-avatar.svg",
+            createdAt: new Date().toISOString(),
+          });
+
+          if (deliveredCount === 0) {
+            sendJson(socket, {
+              type: "call_invite_response",
+              callId: payload.callId,
+              accepted: false,
+              recipientId: payload.recipientId,
+              reason: "unavailable",
+            });
+          }
+          break;
+        }
+
+        case "call_invite_response": {
+          if (!socket.userId || !payload.callId || !payload.recipientId) return;
+
+          broadcastToUser(payload.recipientId, {
+            type: "call_invite_response",
+            callId: payload.callId,
+            accepted: Boolean(payload.accepted),
+            recipientId: socket.userId,
+            responderName: socket.user?.fullName || "Someone",
+            reason: payload.reason || null,
           });
           break;
         }
@@ -210,6 +352,9 @@ wss.on("connection", (socket) => {
   });
 
   socket.on("close", () => {
+    const wasLastSocketForUser =
+      socket.userId && socketsByUserId.get(socket.userId)?.size === 1;
+
     if (socket.userId) {
       removeSocketForUser(socket.userId, socket);
     }
@@ -225,6 +370,14 @@ wss.on("connection", (socket) => {
         callId,
         userId: socket.userId,
       });
+    }
+
+    for (const presenceUserId of socket.subscriptions.presenceUsers) {
+      removeFromSetMap(presenceSubscribers, presenceUserId, socket);
+    }
+
+    if (socket.userId && wasLastSocketForUser) {
+      broadcastPresenceUpdate(socket.userId, false);
     }
   });
 });
@@ -244,8 +397,12 @@ server.on("upgrade", async (request, socket, head) => {
 
     wss.handleUpgrade(request, socket, head, (ws) => {
       ws.userId = user._id;
+      ws.user = user;
       addSocketForUser(user._id, ws);
       wss.emit("connection", ws, request);
+      if (socketsByUserId.get(user._id)?.size === 1) {
+        broadcastPresenceUpdate(user._id, true);
+      }
     });
   } catch (error) {
     console.error("WebSocket upgrade failed", error.message);

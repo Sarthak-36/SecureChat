@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate, useParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { MicIcon, MicOffIcon, PhoneOffIcon, VideoIcon, VideoOffIcon } from "lucide-react";
 import toast from "react-hot-toast";
@@ -9,23 +9,51 @@ import useAuthUser from "../hooks/useAuthUser";
 import { getChatToken } from "../lib/api";
 import { getWebSocketUrl } from "../lib/realtime";
 
+const defaultIceServers = [{ urls: "stun:stun.l.google.com:19302" }];
+
+const parseIceServers = () => {
+  const rawIceServers = import.meta.env.VITE_ICE_SERVERS;
+
+  if (!rawIceServers) {
+    return defaultIceServers;
+  }
+
+  try {
+    const parsedIceServers = JSON.parse(rawIceServers);
+    return Array.isArray(parsedIceServers) && parsedIceServers.length > 0
+      ? parsedIceServers
+      : defaultIceServers;
+  } catch (error) {
+    console.error("Invalid VITE_ICE_SERVERS configuration", error);
+    return defaultIceServers;
+  }
+};
+
 const rtcConfig = {
-  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+  iceServers: parseIceServers(),
 };
 
 const CallPage = () => {
   const { id: callId } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const socketRef = useRef(null);
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
+  const pendingIceCandidatesRef = useRef([]);
+  const isMutedRef = useRef(false);
+  const isCameraOffRef = useRef(false);
 
   const [isInitializing, setIsInitializing] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [statusText, setStatusText] = useState("Preparing your devices...");
+
+  const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const callMode = searchParams.get("mode");
 
   const { authUser, isLoading } = useAuthUser();
   const { data: tokenData } = useQuery({
@@ -34,10 +62,36 @@ const CallPage = () => {
     enabled: !!authUser,
   });
 
+  const syncLocalMediaState = () => {
+    if (!localStreamRef.current) return;
+
+    for (const audioTrack of localStreamRef.current.getAudioTracks()) {
+      audioTrack.enabled = !isMutedRef.current;
+    }
+
+    for (const videoTrack of localStreamRef.current.getVideoTracks()) {
+      videoTrack.enabled = !isCameraOffRef.current;
+    }
+  };
+
   useEffect(() => {
     if (!authUser || !tokenData?.token || !callId) return;
 
     let isCancelled = false;
+
+    const flushPendingIceCandidates = async (peerConnection) => {
+      if (!peerConnection.remoteDescription) return;
+
+      while (pendingIceCandidatesRef.current.length > 0) {
+        const candidate = pendingIceCandidatesRef.current.shift();
+
+        try {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (error) {
+          console.error("Error adding queued ICE candidate", error);
+        }
+      }
+    };
 
     const ensurePeerConnection = () => {
       if (peerConnectionRef.current) {
@@ -45,6 +99,8 @@ const CallPage = () => {
       }
 
       const peerConnection = new RTCPeerConnection(rtcConfig);
+      const remoteStream = remoteStreamRef.current || new MediaStream();
+      remoteStreamRef.current = remoteStream;
 
       if (localStreamRef.current) {
         for (const track of localStreamRef.current.getTracks()) {
@@ -53,9 +109,18 @@ const CallPage = () => {
       }
 
       peerConnection.ontrack = (event) => {
-        const [remoteStream] = event.streams;
+        for (const track of event.streams[0]?.getTracks() || [event.track]) {
+          const alreadyAdded = remoteStream.getTracks().some((existingTrack) => existingTrack.id === track.id);
+          if (!alreadyAdded) {
+            remoteStream.addTrack(track);
+          }
+        }
+
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = remoteStream;
+          remoteVideoRef.current
+            .play()
+            .catch((error) => console.error("Remote video playback was blocked", error));
         }
         setStatusText("Connected");
       };
@@ -96,9 +161,15 @@ const CallPage = () => {
           audio: true,
         });
 
-        if (isCancelled) return;
+        if (isCancelled) {
+          for (const track of localStream.getTracks()) {
+            track.stop();
+          }
+          return;
+        }
 
         localStreamRef.current = localStream;
+        syncLocalMediaState();
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = localStream;
         }
@@ -107,7 +178,7 @@ const CallPage = () => {
         socketRef.current = socket;
 
         socket.addEventListener("open", () => {
-          setStatusText("Waiting for the other person...");
+          setStatusText(callMode === "outgoing" ? "Ringing..." : "Joining the call...");
           socket.send(JSON.stringify({ type: "join_call", callId }));
           setIsInitializing(false);
         });
@@ -118,6 +189,7 @@ const CallPage = () => {
           if (payload.userId === authUser._id) return;
 
           if (payload.type === "peer_joined") {
+            setStatusText("Connecting...");
             const peerConnection = ensurePeerConnection();
             const offer = await peerConnection.createOffer();
             await peerConnection.setLocalDescription(offer);
@@ -137,6 +209,7 @@ const CallPage = () => {
             if (payload.signal.description) {
               const description = new RTCSessionDescription(payload.signal.description);
               await peerConnection.setRemoteDescription(description);
+              await flushPendingIceCandidates(peerConnection);
 
               if (description.type === "offer") {
                 const answer = await peerConnection.createAnswer();
@@ -152,10 +225,14 @@ const CallPage = () => {
             }
 
             if (payload.signal.candidate) {
-              try {
-                await peerConnection.addIceCandidate(new RTCIceCandidate(payload.signal.candidate));
-              } catch (error) {
-                console.error("Error adding ICE candidate", error);
+              if (peerConnection.remoteDescription) {
+                try {
+                  await peerConnection.addIceCandidate(new RTCIceCandidate(payload.signal.candidate));
+                } catch (error) {
+                  console.error("Error adding ICE candidate", error);
+                }
+              } else {
+                pendingIceCandidatesRef.current.push(payload.signal.candidate);
               }
             }
           }
@@ -164,6 +241,20 @@ const CallPage = () => {
             setStatusText("The other person left the call");
             if (remoteVideoRef.current) {
               remoteVideoRef.current.srcObject = null;
+            }
+            remoteStreamRef.current = new MediaStream();
+          }
+
+          if (payload.type === "call_invite_response" && payload.callId === callId && !payload.accepted) {
+            if (payload.reason === "declined") {
+              setStatusText("Call declined");
+              toast.error(`${payload.responderName || "The other person"} declined the call`);
+            } else if (payload.reason === "busy") {
+              setStatusText("The other person is busy");
+              toast.error(`${payload.responderName || "The other person"} is already on a call`);
+            } else if (payload.reason === "unavailable") {
+              setStatusText("The other person is unavailable");
+              toast.error("The other person is not available for a call right now");
             }
           }
 
@@ -174,7 +265,14 @@ const CallPage = () => {
 
         socket.addEventListener("error", () => {
           toast.error("Could not connect to call signaling");
+          setStatusText("Call signaling failed");
           setIsInitializing(false);
+        });
+
+        socket.addEventListener("close", () => {
+          if (!isCancelled) {
+            setStatusText("Call signaling closed");
+          }
         });
       } catch (error) {
         console.error("Error initializing call", error);
@@ -186,8 +284,19 @@ const CallPage = () => {
 
     setupCall();
 
+    const handleVisibilitySync = () => {
+      syncLocalMediaState();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilitySync);
+    window.addEventListener("focus", handleVisibilitySync);
+    window.addEventListener("pageshow", handleVisibilitySync);
+
     return () => {
       isCancelled = true;
+      document.removeEventListener("visibilitychange", handleVisibilitySync);
+      window.removeEventListener("focus", handleVisibilitySync);
+      window.removeEventListener("pageshow", handleVisibilitySync);
 
       if (socketRef.current?.readyState === WebSocket.OPEN) {
         socketRef.current.send(JSON.stringify({ type: "leave_call", callId }));
@@ -195,22 +304,28 @@ const CallPage = () => {
       }
 
       peerConnectionRef.current?.close();
+      peerConnectionRef.current = null;
+      pendingIceCandidatesRef.current = [];
 
       if (localStreamRef.current) {
         for (const track of localStreamRef.current.getTracks()) {
           track.stop();
         }
+        localStreamRef.current = null;
       }
+
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = null;
+      }
+      remoteStreamRef.current = null;
     };
-  }, [authUser, tokenData?.token, callId]);
+  }, [authUser, tokenData?.token, callId, callMode]);
 
   const toggleMute = () => {
     if (!localStreamRef.current) return;
 
     const nextMuted = !isMuted;
-    for (const audioTrack of localStreamRef.current.getAudioTracks()) {
-      audioTrack.enabled = !nextMuted;
-    }
+    isMutedRef.current = nextMuted;
     setIsMuted(nextMuted);
   };
 
@@ -218,11 +333,15 @@ const CallPage = () => {
     if (!localStreamRef.current) return;
 
     const nextCameraOff = !isCameraOff;
-    for (const videoTrack of localStreamRef.current.getVideoTracks()) {
-      videoTrack.enabled = !nextCameraOff;
-    }
+    isCameraOffRef.current = nextCameraOff;
     setIsCameraOff(nextCameraOff);
   };
+
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+    isCameraOffRef.current = isCameraOff;
+    syncLocalMediaState();
+  }, [isCameraOff, isMuted]);
 
   const leaveCall = () => {
     navigate("/");

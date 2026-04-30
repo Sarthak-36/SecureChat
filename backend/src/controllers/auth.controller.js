@@ -6,6 +6,12 @@ import { query } from "../lib/db.js";
 import { serializeUser } from "../lib/formatters.js";
 import { getUserWithPasswordByEmail } from "../lib/users.js";
 
+const DEFAULT_PROFILE_PIC = "/default-avatar.svg";
+const normalizeProfilePic = (profilePic) => {
+  const normalizedProfilePic = typeof profilePic === "string" ? profilePic.trim() : "";
+  return normalizedProfilePic || DEFAULT_PROFILE_PIC;
+};
+
 export async function signup(req, res) {
   const { email, password, fullName } = req.body;
 
@@ -31,9 +37,6 @@ export async function signup(req, res) {
 
     const userId = randomUUID();
     const hashedPassword = await bcrypt.hash(password, 10);
-    const idx = Math.floor(Math.random() * 100) + 1;
-    const randomAvatar = `https://avatar.iran.liara.run/public/${idx}.png`;
-
     const createdUser = await query(
       `
         INSERT INTO users (id, email, password, full_name, profile_pic)
@@ -41,7 +44,7 @@ export async function signup(req, res) {
         RETURNING id, email, full_name, bio, profile_pic,
                   location, is_onboarded, created_at, updated_at
       `,
-      [userId, email, hashedPassword, fullName, randomAvatar]
+      [userId, email, hashedPassword, fullName, DEFAULT_PROFILE_PIC]
     );
 
     const token = signAuthToken(userId);
@@ -105,14 +108,14 @@ export async function onboard(req, res) {
         SET full_name = $2,
             bio = $3,
             location = $4,
-            profile_pic = CASE WHEN $5::TEXT IS NULL THEN profile_pic ELSE $5::TEXT END,
+            profile_pic = $5,
             is_onboarded = TRUE,
             updated_at = NOW()
         WHERE id = $1
         RETURNING id, email, full_name, bio, profile_pic,
                   location, is_onboarded, created_at, updated_at
       `,
-      [userId, fullName, bio, location, profilePic ?? null]
+      [userId, fullName, bio, location, normalizeProfilePic(profilePic)]
     );
 
     if (!updatedUser.rows[0]) {
@@ -143,13 +146,13 @@ export async function updateProfile(req, res) {
         SET full_name = $2,
             bio = $3,
             location = $4,
-            profile_pic = CASE WHEN $5::TEXT IS NULL THEN profile_pic ELSE $5::TEXT END,
+            profile_pic = $5,
             updated_at = NOW()
         WHERE id = $1
         RETURNING id, email, full_name, bio, profile_pic,
                   location, is_onboarded, created_at, updated_at
       `,
-      [userId, fullName, bio, location, profilePic ?? null]
+      [userId, fullName, bio, location, normalizeProfilePic(profilePic)]
     );
 
     if (!updatedUser.rows[0]) {

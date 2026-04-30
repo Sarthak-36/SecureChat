@@ -5,15 +5,18 @@ import { serializeMessage } from "../lib/formatters.js";
 const getConversationId = (userA, userB) => [userA, userB].sort().join(":");
 
 const markConversationAsRead = async (userId, conversationId) => {
-  await query(
+  const result = await query(
     `
       INSERT INTO conversation_reads (user_id, conversation_id, last_read_at)
       VALUES ($1, $2, NOW())
       ON CONFLICT (user_id, conversation_id)
       DO UPDATE SET last_read_at = EXCLUDED.last_read_at
+      RETURNING last_read_at
     `,
     [userId, conversationId]
   );
+
+  return result.rows[0]?.last_read_at || null;
 };
 
 export async function getWebSocketToken(req, res) {
@@ -35,15 +38,23 @@ export async function getMessages(req, res) {
 
     const result = await query(
       `
-        SELECT id, conversation_id, sender_id, recipient_id, text, message_type, metadata, created_at
-        FROM messages
-        WHERE conversation_id = $1
-          AND id NOT IN (
+        SELECT m.id, m.conversation_id, m.sender_id, m.recipient_id, m.text, m.message_type, m.metadata,
+               m.created_at,
+               CASE
+                 WHEN m.sender_id = $2 THEN cr.last_read_at
+                 ELSE NULL
+               END AS recipient_read_at
+        FROM messages m
+        LEFT JOIN conversation_reads cr
+          ON cr.user_id = m.recipient_id
+         AND cr.conversation_id = m.conversation_id
+        WHERE m.conversation_id = $1
+          AND m.id NOT IN (
             SELECT message_id
             FROM hidden_messages
             WHERE user_id = $2
           )
-        ORDER BY created_at ASC
+        ORDER BY m.created_at ASC
       `,
       [conversationId, currentUserId]
     );
@@ -136,6 +147,38 @@ export async function clearConversation(req, res) {
     res.status(200).json({ success: true, conversationId });
   } catch (error) {
     console.error("Error in clearConversation controller:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+}
+
+export async function garbageCollectHiddenMessages(req, res) {
+  try {
+    const deletedMessages = await query(
+      `
+        DELETE FROM messages m
+        WHERE EXISTS (
+          SELECT 1
+          FROM hidden_messages hm_sender
+          WHERE hm_sender.message_id = m.id
+            AND hm_sender.user_id = m.sender_id
+        )
+          AND EXISTS (
+            SELECT 1
+            FROM hidden_messages hm_recipient
+            WHERE hm_recipient.message_id = m.id
+              AND hm_recipient.user_id = m.recipient_id
+          )
+        RETURNING id, conversation_id
+      `
+    );
+
+    res.status(200).json({
+      success: true,
+      deletedCount: deletedMessages.rowCount,
+      deletedMessageIds: deletedMessages.rows.map((row) => row.id),
+    });
+  } catch (error) {
+    console.error("Error in garbageCollectHiddenMessages controller:", error);
     res.status(500).json({ message: "Internal Server Error" });
   }
 }

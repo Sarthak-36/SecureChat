@@ -1,136 +1,85 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { useMutation } from "@tanstack/react-query";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { EllipsisVerticalIcon, ImagePlusIcon, SendHorizontalIcon, XIcon } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 
-import CallButton from "../components/CallButton";
+import AIDetectionModal from "../components/AIDetectionModal";
 import ChatLoader from "../components/ChatLoader";
-import AvatarImage from "../components/AvatarImage";
+import ChatHeader from "../components/chat/ChatHeader";
+import ChatMessageItem from "../components/chat/ChatMessageItem";
+import MessageComposer from "../components/chat/MessageComposer";
+import TypingIndicator from "../components/chat/TypingIndicator";
 import useAuthUser from "../hooks/useAuthUser";
 import {
   clearConversation,
-  getChatToken,
   deleteMessage,
+  detectImageMessage,
+  detectLinkMessage,
+  detectTextMessage,
+  getChatToken,
   getMessages,
   getUserFriends,
   hideMessageForMe,
+  removeFriend,
   uploadChatAttachment,
 } from "../lib/api";
 import { getWebSocketUrl } from "../lib/realtime";
 
-const ChatAttachment = ({ attachment }) => {
-  if (!attachment?.url) return null;
+const buildReplyPayload = (message) => ({
+  messageId: message._id,
+  senderId: message.senderId,
+  text: message.text || "",
+  attachment: message.metadata?.attachments?.[0]
+    ? {
+        name: message.metadata.attachments[0].name,
+        type: message.metadata.attachments[0].type,
+      }
+    : null,
+});
 
-  if (attachment.type === "image") {
-    return (
-      <a href={attachment.url} target="_blank" rel="noreferrer">
-        <img
-          src={attachment.url}
-          alt={attachment.name || "Attachment"}
-          className="mt-2 max-h-72 w-full rounded-xl object-cover"
-        />
-      </a>
-    );
-  }
+const getLatestReadAt = (messageHistory) => {
+  let latestReadAt = null;
 
-  if (attachment.type === "video") {
-    return <video src={attachment.url} controls className="mt-2 max-h-72 w-full rounded-xl" />;
-  }
-
-  if (attachment.type === "audio") {
-    return <audio src={attachment.url} controls className="mt-2 w-full" />;
-  }
-
-  return (
-    <a
-      href={attachment.url}
-      target="_blank"
-      rel="noreferrer"
-      className="mt-2 flex items-center justify-between gap-3 rounded-xl border border-current/20 px-3 py-2 text-sm"
-    >
-      <span className="truncate">{attachment.name || "Download file"}</span>
-      <span className="opacity-70">Open</span>
-    </a>
-  );
-};
-
-const MessageActions = ({ canDeleteForEveryone, message, onDeleteForEveryone, onDeleteForMe }) => {
-  const handleCopy = async () => {
-    const textToCopy = message.text || message.metadata?.attachments?.[0]?.url;
-    if (!textToCopy) {
-      toast.error("Nothing to copy");
-      return;
+  for (const message of messageHistory) {
+    if (!message.readAt) continue;
+    if (!latestReadAt || new Date(message.readAt).getTime() > new Date(latestReadAt).getTime()) {
+      latestReadAt = message.readAt;
     }
+  }
 
-    try {
-      await navigator.clipboard.writeText(textToCopy);
-      toast.success("Message copied");
-    } catch (error) {
-      toast.error("Could not copy message");
-    }
-  };
-
-  return (
-    <div className="dropdown dropdown-end">
-      <button tabIndex={0} className="btn btn-ghost btn-circle btn-xs">
-        <EllipsisVerticalIcon className="size-4" />
-      </button>
-      <ul
-        tabIndex={0}
-        className="dropdown-content z-20 mt-2 w-44 rounded-box bg-base-200 p-2 shadow-lg"
-      >
-        <li>
-          <button type="button" className="btn btn-ghost btn-sm justify-start" onClick={handleCopy}>
-            Copy
-          </button>
-        </li>
-        <li>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm justify-start"
-            onClick={() => onDeleteForMe(message._id)}
-          >
-            Delete for me
-          </button>
-        </li>
-        {canDeleteForEveryone ? (
-          <li>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm justify-start text-error"
-              onClick={() => onDeleteForEveryone(message._id)}
-            >
-              Delete for everyone
-            </button>
-          </li>
-        ) : null}
-        <li>
-          <button type="button" className="btn btn-ghost btn-sm justify-start" disabled>
-            More soon
-          </button>
-        </li>
-      </ul>
-    </div>
-  );
+  return latestReadAt;
 };
 
 const ChatPage = () => {
   const { id: targetUserId } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const messagesEndRef = useRef(null);
+  const messageNodesRef = useRef({});
   const socketRef = useRef(null);
   const fileInputRef = useRef(null);
+  const messageInputRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
+  const isTypingRef = useRef(false);
 
   const [messages, setMessages] = useState([]);
   const [messageText, setMessageText] = useState("");
   const [socketReady, setSocketReady] = useState(false);
   const [pendingAttachment, setPendingAttachment] = useState(null);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+  const [aiDetectionResult, setAiDetectionResult] = useState(null);
+  const [detectingMessageId, setDetectingMessageId] = useState(null);
+  const [checkingLinkMessageId, setCheckingLinkMessageId] = useState(null);
+  const [isRecheckingDetection, setIsRecheckingDetection] = useState(false);
+  const [messageSearch, setMessageSearch] = useState("");
+  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [typingUserId, setTypingUserId] = useState(null);
+  const [targetUserReadAt, setTargetUserReadAt] = useState(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState(null);
+  const [isTargetUserOnline, setIsTargetUserOnline] = useState(false);
 
   const { authUser } = useAuthUser();
-  const queryClient = useQueryClient();
 
   const conversationId = useMemo(() => {
     if (!authUser?._id || !targetUserId) return null;
@@ -156,6 +105,15 @@ const ChatPage = () => {
   });
 
   const targetUser = friends.find((friend) => friend._id === targetUserId);
+  const normalizedMessageSearch = messageSearch.trim().toLowerCase();
+
+  const visibleMessages = useMemo(() => {
+    if (!normalizedMessageSearch) return messages;
+
+    return messages.filter((message) => message.text?.toLowerCase().includes(normalizedMessageSearch));
+  }, [messages, normalizedMessageSearch]);
+
+  const matchingMessageCount = visibleMessages.length;
 
   const { mutate: deleteMessageMutation } = useMutation({
     mutationFn: deleteMessage,
@@ -194,17 +152,56 @@ const ChatPage = () => {
     },
   });
 
+  const { mutate: removeFriendMutation, isPending: isRemovingFriend } = useMutation({
+    mutationFn: removeFriend,
+    onSuccess: () => {
+      toast.success(`${targetUser?.fullName || "Friend"} removed from your friend list`);
+      queryClient.invalidateQueries({ queryKey: ["friends"] });
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+      queryClient.invalidateQueries({ queryKey: ["friendRequests"] });
+      queryClient.invalidateQueries({ queryKey: ["outgoingFriendReqs"] });
+      navigate("/friends");
+    },
+    onError: (error) => {
+      toast.error(error?.response?.data?.message || "Could not remove friend");
+    },
+  });
+
+  const { mutateAsync: detectImageMutation } = useMutation({
+    mutationFn: ({ messageId, force }) => detectImageMessage(messageId, { force }),
+  });
+
+  const { mutateAsync: detectTextMutation } = useMutation({
+    mutationFn: ({ messageId, force }) => detectTextMessage(messageId, { force }),
+  });
+
+  const { mutateAsync: detectLinkMutation } = useMutation({
+    mutationFn: ({ messageId, force }) => detectLinkMessage(messageId, { force }),
+  });
+
   useEffect(() => {
     setMessages(history);
+    setTargetUserReadAt(getLatestReadAt(history));
   }, [history]);
 
   useEffect(() => {
-    if (!tokenData?.token || !conversationId) return;
+    if (!tokenData?.token || !conversationId || !authUser?._id) return;
 
     let isCleaningUp = false;
     let hasOpened = false;
     const socket = new WebSocket(getWebSocketUrl(tokenData.token));
     socketRef.current = socket;
+
+    const markConversationRead = () => {
+      if (socket.readyState !== WebSocket.OPEN || !conversationId) return;
+
+      socket.send(
+        JSON.stringify({
+          type: "mark_conversation_read",
+          conversationId,
+        })
+      );
+    };
 
     socket.addEventListener("open", () => {
       hasOpened = true;
@@ -213,6 +210,12 @@ const ChatPage = () => {
         JSON.stringify({
           type: "join_conversation",
           conversationId,
+        })
+      );
+      socket.send(
+        JSON.stringify({
+          type: "subscribe_presence",
+          userIds: [targetUserId],
         })
       );
     });
@@ -229,6 +232,45 @@ const ChatPage = () => {
           return [...currentMessages, payload.message];
         });
         queryClient.invalidateQueries({ queryKey: ["friends"] });
+
+        if (payload.message.senderId === targetUserId) {
+          setTypingUserId(null);
+          if (document.visibilityState === "visible") {
+            markConversationRead();
+          }
+        }
+      }
+
+      if (payload.type === "presence_snapshot") {
+        setIsTargetUserOnline((payload.onlineUserIds || []).includes(targetUserId));
+      }
+
+      if (payload.type === "presence_updated" && payload.userId === targetUserId) {
+        setIsTargetUserOnline(Boolean(payload.isOnline));
+      }
+
+      if (
+        payload.type === "conversation_read" &&
+        payload.conversationId === conversationId &&
+        payload.userId === targetUserId
+      ) {
+        setTargetUserReadAt(payload.lastReadAt);
+      }
+
+      if (
+        payload.type === "typing_start" &&
+        payload.conversationId === conversationId &&
+        payload.userId === targetUserId
+      ) {
+        setTypingUserId(payload.userId);
+      }
+
+      if (
+        payload.type === "typing_stop" &&
+        payload.conversationId === conversationId &&
+        payload.userId === targetUserId
+      ) {
+        setTypingUserId(null);
       }
 
       if (payload.type === "error") {
@@ -250,15 +292,100 @@ const ChatPage = () => {
       }
     });
 
+    const handleVisibleRead = () => {
+      if (document.visibilityState === "visible") {
+        markConversationRead();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibleRead);
+    window.addEventListener("focus", handleVisibleRead);
+
     return () => {
       isCleaningUp = true;
+      document.removeEventListener("visibilitychange", handleVisibleRead);
+      window.removeEventListener("focus", handleVisibleRead);
+
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+
       socket.close();
     };
-  }, [conversationId, tokenData?.token]);
+  }, [authUser?._id, conversationId, queryClient, targetUserId, tokenData?.token]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [visibleMessages, typingUserId]);
+
+  useEffect(() => {
+    if (isSearchExpanded) return;
+    setMessageSearch("");
+  }, [isSearchExpanded]);
+
+  useEffect(() => {
+    if (!socketReady || !conversationId || !authUser?._id) return;
+
+    const latestMessage = messages[messages.length - 1];
+    if (latestMessage && latestMessage.senderId === targetUserId && document.visibilityState === "visible") {
+      socketRef.current?.send(
+        JSON.stringify({
+          type: "mark_conversation_read",
+          conversationId,
+        })
+      );
+    }
+  }, [authUser?._id, conversationId, messages, socketReady, targetUserId]);
+
+  const sendTypingState = (type) => {
+    if (!socketReady || !socketRef.current || !conversationId) return;
+
+    socketRef.current.send(
+      JSON.stringify({
+        type,
+        conversationId,
+      })
+    );
+  };
+
+  const stopTyping = () => {
+    if (!isTypingRef.current) return;
+
+    isTypingRef.current = false;
+    sendTypingState("typing_stop");
+
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
+  };
+
+  const scheduleTypingStop = () => {
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+
+    typingTimeoutRef.current = setTimeout(() => {
+      stopTyping();
+    }, 1600);
+  };
+
+  const handleMessageTextChange = (event) => {
+    const nextValue = event.target.value;
+    setMessageText(nextValue);
+
+    if (!nextValue.trim()) {
+      stopTyping();
+      return;
+    }
+
+    if (!isTypingRef.current) {
+      isTypingRef.current = true;
+      sendTypingState("typing_start");
+    }
+
+    scheduleTypingStop();
+  };
 
   const handleAttachmentSelect = async (event) => {
     const selectedFile = event.target.files?.[0];
@@ -270,12 +397,66 @@ const ChatPage = () => {
       const response = await uploadChatAttachment(selectedFile);
       setPendingAttachment(response.attachment);
       toast.success("Attachment uploaded");
+      window.requestAnimationFrame(() => {
+        messageInputRef.current?.focus();
+      });
     } catch (error) {
       toast.error(error?.response?.data?.message || "Could not upload attachment");
     } finally {
       setIsUploadingAttachment(false);
       event.target.value = "";
     }
+  };
+
+  const handleSearchChange = (event) => {
+    setMessageSearch(event.target.value);
+  };
+
+  const handleComposerKeyDown = (event) => {
+    if (event.key !== "Enter" || event.shiftKey) {
+      return;
+    }
+
+    event.preventDefault();
+
+    const trimmedText = messageText.trim();
+    if (!trimmedText && !pendingAttachment) {
+      return;
+    }
+
+    event.currentTarget.form?.requestSubmit();
+  };
+
+  const registerMessageNode = (messageId, node) => {
+    if (node) {
+      messageNodesRef.current[messageId] = node;
+      return;
+    }
+
+    delete messageNodesRef.current[messageId];
+  };
+
+  const handleJumpToMessage = (messageId) => {
+    const targetNode = messageNodesRef.current[messageId];
+    if (!targetNode) {
+      toast.error("Original message is not available in this chat");
+      return;
+    }
+
+    targetNode.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightedMessageId(messageId);
+    window.setTimeout(() => {
+      setHighlightedMessageId((currentMessageId) =>
+        currentMessageId === messageId ? null : currentMessageId
+      );
+    }, 1800);
+  };
+
+  const handleReplyToMessage = (currentMessage) => {
+    setReplyingTo(buildReplyPayload(currentMessage));
+    window.requestAnimationFrame(() => {
+      messageInputRef.current?.focus();
+    });
   };
 
   const handleSendMessage = (event) => {
@@ -286,17 +467,27 @@ const ChatPage = () => {
     const trimmedText = messageText.trim();
     if (!trimmedText && !pendingAttachment) return;
 
+    const metadata = {};
+    if (pendingAttachment) {
+      metadata.attachments = [pendingAttachment];
+    }
+    if (replyingTo) {
+      metadata.replyTo = replyingTo;
+    }
+
     socketRef.current.send(
       JSON.stringify({
         type: "chat_message",
         recipientId: targetUserId,
         text: trimmedText,
-        metadata: pendingAttachment ? { attachments: [pendingAttachment] } : {},
+        metadata,
       })
     );
 
     setMessageText("");
     setPendingAttachment(null);
+    setReplyingTo(null);
+    stopTyping();
     queryClient.invalidateQueries({ queryKey: ["friends"] });
   };
 
@@ -307,18 +498,128 @@ const ChatPage = () => {
     }
 
     const callId = crypto.randomUUID();
-    const callUrl = `${window.location.origin}/call/${callId}`;
-
     socketRef.current.send(
       JSON.stringify({
-        type: "chat_message",
+        type: "call_invite",
+        callId,
         recipientId: targetUserId,
-        text: `I've started a video call. Join me here: ${callUrl}`,
       })
     );
 
-    toast.success("Video call invite sent");
-    navigate(`/call/${callId}`);
+    toast.success(`Calling ${targetUser?.fullName || "your friend"}...`);
+    navigate(`/call/${callId}?mode=outgoing&peer=${targetUserId}`);
+  };
+
+  const runDetectionForMessage = async (message, { force = false } = {}) => {
+    const attachment = message.metadata?.attachments?.[0];
+    const text = message.text?.trim();
+
+    if (attachment?.type === "image") {
+      setDetectingMessageId(message._id);
+
+      try {
+        const result = await detectImageMutation({ messageId: message._id, force });
+        setAiDetectionResult(result);
+        toast.success(
+          force
+            ? "AI image detection refreshed"
+            : result.cached
+              ? "Showing saved AI result"
+              : "AI image detection complete"
+        );
+      } catch (error) {
+        toast.error(error?.response?.data?.message || "Could not run AI detection");
+      } finally {
+        setDetectingMessageId(null);
+      }
+      return;
+    }
+
+    if (!text) {
+      toast.error("AI detection currently supports image or text messages");
+      return;
+    }
+
+    setDetectingMessageId(message._id);
+
+    try {
+      const result = await detectTextMutation({ messageId: message._id, force });
+      setAiDetectionResult(result);
+      toast.success(
+        force
+          ? "AI text detection refreshed"
+          : result.cached
+            ? "Showing saved AI result"
+            : "AI text detection complete"
+      );
+    } catch (error) {
+      toast.error(error?.response?.data?.message || "Could not run AI detection");
+    } finally {
+      setDetectingMessageId(null);
+    }
+  };
+
+  const runLinkCheckForMessage = async (message, { force = false } = {}) => {
+    const text = message.text?.trim();
+
+    if (!text || !/(https?:\/\/|www\.)/i.test(text)) {
+      toast.error("Suspicious link check needs a message with at least one link");
+      return;
+    }
+
+    setCheckingLinkMessageId(message._id);
+
+    try {
+      const result = await detectLinkMutation({ messageId: message._id, force });
+      setAiDetectionResult(result);
+      toast.success(
+        force
+          ? "Suspicious link check refreshed"
+          : result.cached
+            ? "Showing saved link safety result"
+            : "Suspicious link check complete"
+      );
+    } catch (error) {
+      toast.error(error?.response?.data?.message || "Could not check the link");
+    } finally {
+      setCheckingLinkMessageId(null);
+    }
+  };
+
+  const handleRecheckDetection = async () => {
+    if (!aiDetectionResult?.messageId) return;
+
+    const message = messages.find((currentMessage) => currentMessage._id === aiDetectionResult.messageId);
+    if (!message) {
+      toast.error("Message could not be found for recheck");
+      return;
+    }
+
+    setIsRecheckingDetection(true);
+
+    try {
+      if (aiDetectionResult.checkType === "link") {
+        await runLinkCheckForMessage(message, { force: true });
+      } else {
+        await runDetectionForMessage(message, { force: true });
+      }
+    } finally {
+      setIsRecheckingDetection(false);
+    }
+  };
+
+  const handleClearConversation = () => {
+    if (window.confirm("Clear this chat for your account?")) {
+      clearConversationMutation();
+    }
+  };
+
+  const handleRemoveFriend = () => {
+    if (!targetUserId) return;
+
+    if (window.confirm(`Remove ${targetUser?.fullName || "this friend"} from your friend list?`)) {
+      removeFriendMutation(targetUserId);
+    }
   };
 
   if (loadingFriends || loadingMessages || !authUser || !conversationId) {
@@ -327,147 +628,74 @@ const ChatPage = () => {
 
   return (
     <div className="h-[93vh] flex flex-col bg-base-100">
-      <div className="border-b border-base-300">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4">
-          <div className="min-w-0 flex items-center gap-3">
-            <div className="avatar">
-              <div className="w-12 rounded-full">
-                <AvatarImage
-                  src={targetUser?.profilePic}
-                  name={targetUser?.fullName}
-                  alt={targetUser?.fullName || "Friend"}
-                />
-              </div>
-            </div>
-            <div>
-              <h1 className="font-semibold text-lg">{targetUser?.fullName || "Conversation"}</h1>
-              <p className="text-sm opacity-70">
-                {socketReady ? "Connected over WebSocket" : "Connecting..."}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              disabled={isClearingConversation}
-              onClick={() => {
-                if (window.confirm("Clear this chat for your account?")) {
-                  clearConversationMutation();
-                }
-              }}
-            >
-              {isClearingConversation ? "Clearing..." : "Clear chat"}
-            </button>
-            <CallButton handleVideoCall={handleVideoCall} />
-          </div>
-        </div>
-      </div>
+      <AIDetectionModal
+        result={aiDetectionResult}
+        isRechecking={isRecheckingDetection}
+        onClose={() => setAiDetectionResult(null)}
+        onRecheck={handleRecheckDetection}
+      />
+
+      <ChatHeader
+        handleVideoCall={handleVideoCall}
+        isClearingConversation={isClearingConversation}
+        isRemovingFriend={isRemovingFriend}
+        isTargetUserOnline={isTargetUserOnline}
+        isSearchExpanded={isSearchExpanded}
+        matchingMessageCount={matchingMessageCount}
+        messageSearch={messageSearch}
+        normalizedMessageSearch={normalizedMessageSearch}
+        onChangeSearch={handleSearchChange}
+        onClearConversation={handleClearConversation}
+        onCollapseSearch={() => setIsSearchExpanded(false)}
+        onExpandSearch={() => setIsSearchExpanded(true)}
+        onRemoveFriend={handleRemoveFriend}
+        socketReady={socketReady}
+        targetUser={targetUser}
+      />
 
       <div className="flex-1 overflow-y-auto px-4 py-5">
-        <div className="max-w-4xl mx-auto space-y-3">
-          {messages.map((message) => {
-            const isOwnMessage = message.senderId === authUser._id;
-            const attachment = message.metadata?.attachments?.[0];
-
-            return (
-              <div
-                key={message._id}
-                className={`flex items-start gap-2 ${isOwnMessage ? "justify-end" : "justify-start"}`}
-              >
-                {!isOwnMessage ? (
-                  <MessageActions
-                    canDeleteForEveryone={false}
-                    message={message}
-                    onDeleteForEveryone={deleteMessageMutation}
-                    onDeleteForMe={hideMessageMutation}
-                  />
-                ) : null}
-                <div
-                  className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm ${
-                    isOwnMessage ? "bg-primary text-primary-content" : "bg-base-200"
-                  }`}
-                >
-                  {message.text ? (
-                    <p className="whitespace-pre-wrap break-words">{message.text}</p>
-                  ) : null}
-                  {attachment ? <ChatAttachment attachment={attachment} /> : null}
-                  <p className="mt-2 text-[11px] opacity-70">
-                    {new Date(message.createdAt).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </p>
-                </div>
-                {isOwnMessage ? (
-                  <MessageActions
-                    canDeleteForEveryone={true}
-                    message={message}
-                    onDeleteForEveryone={deleteMessageMutation}
-                    onDeleteForMe={hideMessageMutation}
-                  />
-                ) : null}
-              </div>
-            );
-          })}
+        <div className="mx-auto max-w-4xl space-y-3">
+          {visibleMessages.map((message) => (
+            <ChatMessageItem
+              key={message._id}
+              authUserId={authUser._id}
+              checkingLinkMessageId={checkingLinkMessageId}
+              detectingMessageId={detectingMessageId}
+              isHighlighted={highlightedMessageId === message._id}
+              message={message}
+              onDeleteForEveryone={deleteMessageMutation}
+              onDeleteForMe={hideMessageMutation}
+              onJumpToReply={handleJumpToMessage}
+              onReply={handleReplyToMessage}
+              onRunDetection={runDetectionForMessage}
+              onRunLinkCheck={runLinkCheckForMessage}
+              readAt={targetUserReadAt}
+              registerMessageNode={registerMessageNode}
+              searchTerm={normalizedMessageSearch}
+            />
+          ))}
+          {typingUserId === targetUserId ? <TypingIndicator name={targetUser?.fullName} /> : null}
           <div ref={messagesEndRef} />
         </div>
       </div>
 
-      <form onSubmit={handleSendMessage} className="border-t border-base-300 px-4 py-4">
-        <div className="max-w-4xl mx-auto space-y-3">
-          {pendingAttachment ? (
-            <div className="flex items-center justify-between rounded-2xl bg-base-200 px-4 py-3">
-              <div className="min-w-0">
-                <p className="truncate font-medium">{pendingAttachment.name}</p>
-                <p className="text-sm opacity-70">{pendingAttachment.mimeType}</p>
-              </div>
-              <button
-                type="button"
-                className="btn btn-ghost btn-circle btn-sm"
-                onClick={() => setPendingAttachment(null)}
-              >
-                <XIcon className="size-4" />
-              </button>
-            </div>
-          ) : null}
-
-          <div className="flex items-center gap-3">
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              onChange={handleAttachmentSelect}
-            />
-            <button
-              type="button"
-              className="btn btn-outline"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploadingAttachment}
-            >
-              <ImagePlusIcon className="size-4" />
-              {isUploadingAttachment ? "Uploading..." : "Attach"}
-            </button>
-
-            <input
-              type="text"
-              value={messageText}
-              onChange={(event) => setMessageText(event.target.value)}
-              placeholder="Type a message..."
-              className="input input-bordered flex-1"
-            />
-
-            <button
-              className="btn btn-primary"
-              type="submit"
-              disabled={!socketReady || (!messageText.trim() && !pendingAttachment)}
-            >
-              <SendHorizontalIcon className="size-4" />
-              Send
-            </button>
-          </div>
-        </div>
-      </form>
+      <MessageComposer
+        authUserId={authUser._id}
+        fileInputRef={fileInputRef}
+        inputRef={messageInputRef}
+        isUploadingAttachment={isUploadingAttachment}
+        messageText={messageText}
+        onAttachmentSelect={handleAttachmentSelect}
+        onChangeMessageText={handleMessageTextChange}
+        onClearPendingAttachment={() => setPendingAttachment(null)}
+        onClearReply={() => setReplyingTo(null)}
+        onKeyDownMessageInput={handleComposerKeyDown}
+        onOpenFilePicker={() => fileInputRef.current?.click()}
+        onSubmit={handleSendMessage}
+        pendingAttachment={pendingAttachment}
+        replyingTo={replyingTo}
+        socketReady={socketReady}
+      />
     </div>
   );
 };

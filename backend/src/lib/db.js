@@ -84,6 +84,37 @@ const schemaQueries = [
     CREATE INDEX IF NOT EXISTS idx_conversation_reads_user_conversation
     ON conversation_reads (user_id, conversation_id);
   `,
+  `
+    CREATE TABLE IF NOT EXISTS ai_message_checks (
+      message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      check_type TEXT NOT NULL CHECK (check_type IN ('image', 'text', 'link')),
+      payload JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (message_id, check_type)
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS idx_ai_message_checks_message_type
+    ON ai_message_checks (message_id, check_type);
+  `,
+  `
+    ALTER TABLE ai_message_checks
+    DROP CONSTRAINT IF EXISTS ai_message_checks_check_type_check;
+  `,
+  `
+    ALTER TABLE ai_message_checks
+    ADD CONSTRAINT ai_message_checks_check_type_check
+    CHECK (check_type IN ('image', 'text', 'link'));
+  `,
+  `
+    UPDATE users
+    SET profile_pic = '/default-avatar.svg',
+        updated_at = NOW()
+    WHERE profile_pic IS NULL
+       OR BTRIM(profile_pic) = ''
+       OR LOWER(BTRIM(profile_pic)) IN ('null', 'undefined');
+  `,
 ];
 
 export const getPool = () => {

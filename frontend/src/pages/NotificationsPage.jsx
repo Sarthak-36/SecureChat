@@ -1,12 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
 import { acceptFriendRequest, getFriendRequests } from "../lib/api";
 import { BellIcon, ClockIcon, MessageSquareIcon, UserCheckIcon } from "lucide-react";
 import toast from "react-hot-toast";
 import AvatarImage from "../components/AvatarImage";
 import NoNotificationsFound from "../components/NoNotificationsFound";
+import SearchInput from "../components/SearchInput";
 
 const NotificationsPage = () => {
   const queryClient = useQueryClient();
+  const [searchTerm, setSearchTerm] = useState("");
 
   const { data: friendRequests, isLoading } = useQuery({
     queryKey: ["friendRequests"],
@@ -29,11 +32,39 @@ const NotificationsPage = () => {
 
   const incomingRequests = friendRequests?.incomingReqs || [];
   const acceptedRequests = friendRequests?.acceptedReqs || [];
+  const normalizedSearchTerm = searchTerm.trim().toLowerCase();
+
+  const filteredIncomingRequests = useMemo(
+    () =>
+      incomingRequests.filter((request) =>
+        [request.sender.fullName, request.sender.location]
+          .filter(Boolean)
+          .some((value) => value.toLowerCase().includes(normalizedSearchTerm))
+      ),
+    [incomingRequests, normalizedSearchTerm]
+  );
+
+  const filteredAcceptedRequests = useMemo(
+    () =>
+      acceptedRequests.filter((notification) =>
+        [notification.recipient.fullName, notification.recipient.location]
+          .filter(Boolean)
+          .some((value) => value.toLowerCase().includes(normalizedSearchTerm))
+      ),
+    [acceptedRequests, normalizedSearchTerm]
+  );
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
       <div className="container mx-auto max-w-4xl space-y-8">
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight mb-6">Notifications</h1>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Notifications</h1>
+          <SearchInput
+            value={searchTerm}
+            onChange={setSearchTerm}
+            placeholder="Search notifications by name or location"
+          />
+        </div>
 
         {isLoading ? (
           <div className="flex justify-center py-12">
@@ -41,16 +72,16 @@ const NotificationsPage = () => {
           </div>
         ) : (
           <>
-            {incomingRequests.length > 0 && (
+            {filteredIncomingRequests.length > 0 && (
               <section className="space-y-4">
                 <h2 className="text-xl font-semibold flex items-center gap-2">
                   <UserCheckIcon className="h-5 w-5 text-primary" />
                   Friend Requests
-                  <span className="badge badge-primary ml-2">{incomingRequests.length}</span>
+                  <span className="badge badge-primary ml-2">{filteredIncomingRequests.length}</span>
                 </h2>
 
                 <div className="space-y-3">
-                  {incomingRequests.map((request) => (
+                  {filteredIncomingRequests.map((request) => (
                     <div
                       key={request._id}
                       className="card bg-base-200 shadow-sm hover:shadow-md transition-shadow"
@@ -89,7 +120,7 @@ const NotificationsPage = () => {
             )}
 
             {/* ACCEPTED REQS NOTIFICATONS */}
-            {acceptedRequests.length > 0 && (
+            {filteredAcceptedRequests.length > 0 && (
               <section className="space-y-4">
                 <h2 className="text-xl font-semibold flex items-center gap-2">
                   <BellIcon className="h-5 w-5 text-success" />
@@ -97,7 +128,7 @@ const NotificationsPage = () => {
                 </h2>
 
                 <div className="space-y-3">
-                  {acceptedRequests.map((notification) => (
+                  {filteredAcceptedRequests.map((notification) => (
                     <div key={notification._id} className="card bg-base-200 shadow-sm">
                       <div className="card-body p-4">
                         <div className="flex items-start gap-3">
@@ -130,7 +161,7 @@ const NotificationsPage = () => {
               </section>
             )}
 
-            {incomingRequests.length === 0 && acceptedRequests.length === 0 && (
+            {filteredIncomingRequests.length === 0 && filteredAcceptedRequests.length === 0 && (
               <NoNotificationsFound />
             )}
           </>

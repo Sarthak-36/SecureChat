@@ -257,3 +257,50 @@ export async function getOutgoingFriendReqs(req, res) {
     res.status(500).json({ message: "Internal Server Error" });
   }
 }
+
+export async function removeFriend(req, res) {
+  try {
+    const currentUserId = req.user._id;
+    const { id: friendId } = req.params;
+
+    if (currentUserId === friendId) {
+      return res.status(400).json({ message: "You cannot remove yourself from your friend list" });
+    }
+
+    const deletedFriendships = await withTransaction(async (client) => {
+      const friendshipsResult = await client.query(
+        `
+          DELETE FROM friendships
+          WHERE (user_id = $1 AND friend_id = $2)
+             OR (user_id = $2 AND friend_id = $1)
+          RETURNING user_id, friend_id
+        `,
+        [currentUserId, friendId]
+      );
+
+      if (friendshipsResult.rowCount === 0) {
+        return friendshipsResult;
+      }
+
+      await client.query(
+        `
+          DELETE FROM friend_requests
+          WHERE (sender_id = $1 AND recipient_id = $2)
+             OR (sender_id = $2 AND recipient_id = $1)
+        `,
+        [currentUserId, friendId]
+      );
+
+      return friendshipsResult;
+    });
+
+    if (deletedFriendships.rowCount === 0) {
+      return res.status(404).json({ message: "Friend not found" });
+    }
+
+    res.status(200).json({ success: true, removedFriendId: friendId });
+  } catch (error) {
+    console.error("Error in removeFriend controller", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+}

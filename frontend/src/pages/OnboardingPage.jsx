@@ -1,20 +1,23 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import useAuthUser from "../hooks/useAuthUser";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
-import { completeOnboarding } from "../lib/api";
-import { LoaderIcon, MapPinIcon, ShipWheelIcon, ShuffleIcon, UserIcon } from "lucide-react";
+import { completeOnboarding, uploadProfilePicture } from "../lib/api";
+import { ImagePlusIcon, LoaderIcon, MapPinIcon, ShipWheelIcon } from "lucide-react";
 import AvatarImage from "../components/AvatarImage";
+
+const DEFAULT_PROFILE_PIC = "/default-avatar.svg";
 
 const OnboardingPage = () => {
   const { authUser } = useAuthUser();
   const queryClient = useQueryClient();
+  const fileInputRef = useRef(null);
 
   const [formState, setFormState] = useState({
     fullName: authUser?.fullName || "",
     bio: authUser?.bio || "",
     location: authUser?.location || "",
-    profilePic: authUser?.profilePic || "",
+    profilePic: authUser?.profilePic || DEFAULT_PROFILE_PIC,
   });
 
   const { mutate: onboardingMutation, isPending } = useMutation({
@@ -32,15 +35,25 @@ const OnboardingPage = () => {
   const handleSubmit = (e) => {
     e.preventDefault();
 
-    onboardingMutation(formState);
+    onboardingMutation({
+      ...formState,
+      profilePic: formState.profilePic || DEFAULT_PROFILE_PIC,
+    });
   };
 
-  const handleRandomAvatar = () => {
-    const idx = Math.floor(Math.random() * 100) + 1; // 1-100 included
-    const randomAvatar = `https://avatar.iran.liara.run/public/${idx}.png`;
+  const handleProfilePictureUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
 
-    setFormState({ ...formState, profilePic: randomAvatar });
-    toast.success("Random profile picture generated!");
+    try {
+      const response = await uploadProfilePicture(file);
+      setFormState((currentState) => ({ ...currentState, profilePic: response.profilePic }));
+      toast.success("Profile picture uploaded");
+    } catch (error) {
+      toast.error(error?.response?.data?.message || "Could not upload image");
+    } finally {
+      event.target.value = "";
+    }
   };
 
   return (
@@ -62,11 +75,22 @@ const OnboardingPage = () => {
                 />
               </div>
 
-              {/* Generate Random Avatar BTN */}
-              <div className="flex items-center gap-2">
-                <button type="button" onClick={handleRandomAvatar} className="btn btn-accent">
-                  <ShuffleIcon className="size-4 mr-2" />
-                  Generate Random Avatar
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleProfilePictureUpload}
+              />
+
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="btn btn-outline"
+                >
+                  <ImagePlusIcon className="size-4 mr-2" />
+                  Add Profile Photo
                 </button>
               </div>
             </div>

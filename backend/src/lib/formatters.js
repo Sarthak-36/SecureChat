@@ -32,6 +32,7 @@ export const serializeMessage = (row) => ({
   messageType: row.message_type,
   metadata: row.metadata || {},
   createdAt: row.created_at,
+  readAt: row.recipient_read_at || null,
 });
 
 export const serializeFriendSummary = (row) => ({

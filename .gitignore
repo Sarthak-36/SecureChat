@@ -22,13 +22,13 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+frontend/node_modules
+frontend/dist
+frontend/dist-ssr
+frontend/.env
 backend/node_modules
 backend/dist
 backend/dist-ssr
 backend/.env
 backend/uploads
-frontend/node_modules
-frontend/dist
-frontend/dist-ssr
-frontend/.env
 .env

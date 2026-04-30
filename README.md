@@ -1,5 +1,6 @@
 # Fullstack Chat App with some security features
 
+
 Highlights:
 
 - Real-time messaging over WebSockets
@@ -14,11 +15,16 @@ Highlights:
 
 ```env
 PORT=5001
-POSTGRES_URL=postgres://postgres:postgres@localhost:5432/SecureChat
-JWT_SECRET_KEY=your_jwt_secret
-WS_JWT_SECRET_KEY=optional_dedicated_websocket_secret
+POSTGRES_URL=db_url
+JWT_SECRET_KEY=your_secret_key
+WS_JWT_SECRET_KEY=ws_secret_key
 CLIENT_URL=http://localhost:5173
 NODE_ENV=development
+HUGGINGFACE_API_KEY=hf_api_key
+HF_NSFW_MODEL=Falconsai/nsfw_image_detection
+HF_TEXT_MODERATION_MODEL=facebook/roberta-hate-speech-dynabench-r4-target
+HF_AI_IMAGE_MODEL=prithivMLmods/deepfake-detector-model-v1
+GOOGLE_SAFE_BROWSING_API_KEY=google_safe_browsing_api
 ```
 
 ### Frontend (`/frontend`)
