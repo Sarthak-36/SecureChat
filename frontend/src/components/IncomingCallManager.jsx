@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 
 import useAuthUser from "../hooks/useAuthUser";
+import useRingtone from "../hooks/useRingtone";
 import { getChatToken } from "../lib/api";
 import { getWebSocketUrl } from "../lib/realtime";
 import IncomingCallDialog from "./IncomingCallDialog";
@@ -20,6 +21,8 @@ const IncomingCallManager = () => {
     queryFn: getChatToken,
     enabled: !!authUser,
   });
+
+  const { stopRingtone } = useRingtone(Boolean(incomingCall));
 
   useEffect(() => {
     if (!authUser || !tokenData?.token) return;
@@ -47,6 +50,18 @@ const IncomingCallManager = () => {
         setIncomingCall(payload);
       }
 
+      if (payload.type === "call_invite_timeout") {
+        setIncomingCall((currentCall) => {
+          if (currentCall?.callId === payload.callId) {
+            stopRingtone();
+            toast("Call timed out");
+            return null;
+          }
+
+          return currentCall;
+        });
+      }
+
       if (payload.type === "call_invite_response" && !payload.accepted && !location.pathname.startsWith("/call/")) {
         if (payload.reason === "busy") {
           toast.error(`${payload.responderName || "The other person"} is already on a call`);
@@ -59,13 +74,15 @@ const IncomingCallManager = () => {
     });
 
     return () => {
+      stopRingtone();
       socket.close();
     };
-  }, [authUser, tokenData?.token, location.pathname]);
+  }, [authUser, tokenData?.token, location.pathname, stopRingtone]);
 
   const handleAccept = () => {
     if (!incomingCall || !socketRef.current) return;
 
+    stopRingtone();
     socketRef.current.send(
       JSON.stringify({
         type: "call_invite_response",
@@ -82,6 +99,7 @@ const IncomingCallManager = () => {
   const handleDecline = () => {
     if (!incomingCall || !socketRef.current) return;
 
+    stopRingtone();
     socketRef.current.send(
       JSON.stringify({
         type: "call_invite_response",

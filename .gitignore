@@ -32,3 +32,4 @@ backend/dist-ssr
 backend/.env
 backend/uploads
 .env
+features

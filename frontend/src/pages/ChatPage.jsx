@@ -78,6 +78,7 @@ const ChatPage = () => {
   const [targetUserReadAt, setTargetUserReadAt] = useState(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState(null);
   const [isTargetUserOnline, setIsTargetUserOnline] = useState(false);
+  const [activeSearchMatchIndex, setActiveSearchMatchIndex] = useState(0);
 
   const { authUser } = useAuthUser();
 
@@ -107,13 +108,16 @@ const ChatPage = () => {
   const targetUser = friends.find((friend) => friend._id === targetUserId);
   const normalizedMessageSearch = messageSearch.trim().toLowerCase();
 
-  const visibleMessages = useMemo(() => {
-    if (!normalizedMessageSearch) return messages;
+  const matchingMessageIds = useMemo(() => {
+    if (!normalizedMessageSearch) return [];
 
-    return messages.filter((message) => message.text?.toLowerCase().includes(normalizedMessageSearch));
+    return messages
+      .filter((message) => message.text?.toLowerCase().includes(normalizedMessageSearch))
+      .map((message) => message._id);
   }, [messages, normalizedMessageSearch]);
 
-  const matchingMessageCount = visibleMessages.length;
+  const matchingMessageCount = matchingMessageIds.length;
+  const activeSearchMessageId = matchingMessageIds[activeSearchMatchIndex] || null;
 
   const { mutate: deleteMessageMutation } = useMutation({
     mutationFn: deleteMessage,
@@ -316,12 +320,41 @@ const ChatPage = () => {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [visibleMessages, typingUserId]);
+  }, [messages, typingUserId]);
 
   useEffect(() => {
     if (isSearchExpanded) return;
     setMessageSearch("");
+    setActiveSearchMatchIndex(0);
   }, [isSearchExpanded]);
+
+  useEffect(() => {
+    setActiveSearchMatchIndex(0);
+  }, [normalizedMessageSearch]);
+
+  useEffect(() => {
+    if (!matchingMessageCount) {
+      setActiveSearchMatchIndex(0);
+      return;
+    }
+
+    setActiveSearchMatchIndex((currentIndex) => {
+      if (currentIndex < matchingMessageCount) {
+        return currentIndex;
+      }
+
+      return matchingMessageCount - 1;
+    });
+  }, [matchingMessageCount]);
+
+  useEffect(() => {
+    if (!activeSearchMessageId) return;
+
+    const targetNode = messageNodesRef.current[activeSearchMessageId];
+    if (!targetNode) return;
+
+    targetNode.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [activeSearchMessageId]);
 
   useEffect(() => {
     if (!socketReady || !conversationId || !authUser?._id) return;
@@ -410,6 +443,20 @@ const ChatPage = () => {
 
   const handleSearchChange = (event) => {
     setMessageSearch(event.target.value);
+  };
+
+  const handleJumpToNextSearchMatch = () => {
+    if (!matchingMessageCount) return;
+
+    setActiveSearchMatchIndex((currentIndex) => (currentIndex + 1) % matchingMessageCount);
+  };
+
+  const handleJumpToPreviousSearchMatch = () => {
+    if (!matchingMessageCount) return;
+
+    setActiveSearchMatchIndex((currentIndex) =>
+      currentIndex === 0 ? matchingMessageCount - 1 : currentIndex - 1
+    );
   };
 
   const handleComposerKeyDown = (event) => {
@@ -641,6 +688,7 @@ const ChatPage = () => {
         isRemovingFriend={isRemovingFriend}
         isTargetUserOnline={isTargetUserOnline}
         isSearchExpanded={isSearchExpanded}
+        activeSearchMatchIndex={activeSearchMatchIndex}
         matchingMessageCount={matchingMessageCount}
         messageSearch={messageSearch}
         normalizedMessageSearch={normalizedMessageSearch}
@@ -648,6 +696,8 @@ const ChatPage = () => {
         onClearConversation={handleClearConversation}
         onCollapseSearch={() => setIsSearchExpanded(false)}
         onExpandSearch={() => setIsSearchExpanded(true)}
+        onJumpToNextSearchMatch={handleJumpToNextSearchMatch}
+        onJumpToPreviousSearchMatch={handleJumpToPreviousSearchMatch}
         onRemoveFriend={handleRemoveFriend}
         socketReady={socketReady}
         targetUser={targetUser}
@@ -655,12 +705,13 @@ const ChatPage = () => {
 
       <div className="flex-1 overflow-y-auto px-4 py-5">
         <div className="mx-auto max-w-4xl space-y-3">
-          {visibleMessages.map((message) => (
+          {messages.map((message) => (
             <ChatMessageItem
               key={message._id}
               authUserId={authUser._id}
               checkingLinkMessageId={checkingLinkMessageId}
               detectingMessageId={detectingMessageId}
+              isActiveSearchMatch={activeSearchMessageId === message._id}
               isHighlighted={highlightedMessageId === message._id}
               message={message}
               onDeleteForEveryone={deleteMessageMutation}

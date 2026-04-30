@@ -54,6 +54,7 @@ const CallPage = () => {
 
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const callMode = searchParams.get("mode");
+  const peerId = searchParams.get("peer");
 
   const { authUser, isLoading } = useAuthUser();
   const { data: tokenData } = useQuery({
@@ -245,8 +246,10 @@ const CallPage = () => {
             remoteStreamRef.current = new MediaStream();
           }
 
-          if (payload.type === "call_invite_response" && payload.callId === callId && !payload.accepted) {
-            if (payload.reason === "declined") {
+          if (payload.type === "call_invite_response" && payload.callId === callId) {
+            if (payload.accepted) {
+              setStatusText("Answered. Connecting...");
+            } else if (payload.reason === "declined") {
               setStatusText("Call declined");
               toast.error(`${payload.responderName || "The other person"} declined the call`);
             } else if (payload.reason === "busy") {
@@ -256,6 +259,14 @@ const CallPage = () => {
               setStatusText("The other person is unavailable");
               toast.error("The other person is not available for a call right now");
             }
+          }
+
+          if (payload.type === "call_invite_timeout" && payload.callId === callId) {
+            setStatusText("No answer");
+            toast.error("No one answered the call");
+            window.setTimeout(() => {
+              navigate(peerId ? `/chat/${peerId}` : "/");
+            }, 1200);
           }
 
           if (payload.type === "error") {
@@ -319,7 +330,7 @@ const CallPage = () => {
       }
       remoteStreamRef.current = null;
     };
-  }, [authUser, tokenData?.token, callId, callMode]);
+  }, [authUser, tokenData?.token, callId, callMode, navigate, peerId]);
 
   const toggleMute = () => {
     if (!localStreamRef.current) return;
