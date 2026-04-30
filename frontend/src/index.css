@@ -1,0 +1,123 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.chat-bubble-own {
+  background: linear-gradient(135deg, #dcf8c6 0%, #d2f4bf 100%);
+  border: 1px solid rgba(17, 27, 33, 0.08);
+  color: #111b21;
+}
+
+[data-theme="light"] .btn-primary,
+[data-theme="light"] .btn-light-save {
+  background: #16a34a;
+  border-color: #16a34a;
+  color: #f7fff9;
+}
+
+[data-theme="light"] .btn-primary:hover,
+[data-theme="light"] .btn-primary:focus-visible,
+[data-theme="light"] .btn-light-save:hover,
+[data-theme="light"] .btn-light-save:focus-visible {
+  background: #15803d;
+  border-color: #15803d;
+}
+
+:is(
+  [data-theme="dark"],
+  [data-theme="forest"],
+  [data-theme="synthwave"],
+  [data-theme="halloween"],
+  [data-theme="aqua"],
+  [data-theme="lofi"],
+  [data-theme="black"],
+  [data-theme="luxury"],
+  [data-theme="dracula"],
+  [data-theme="acid"],
+  [data-theme="night"],
+  [data-theme="coffee"],
+  [data-theme="dim"],
+  [data-theme="sunset"]
+) .chat-bubble-own {
+  background: linear-gradient(135deg, #144d37 0%, #0b3f2c 100%);
+  border: 1px solid rgba(111, 223, 160, 0.18);
+  color: #edfdf3;
+}
+
+.btn-whatsapp {
+  background: linear-gradient(135deg, #25d366 0%, #128c7e 100%);
+  border: 1px solid rgba(18, 140, 126, 0.4);
+  color: #f8fffb;
+}
+
+.btn-whatsapp:hover,
+.btn-whatsapp:focus-visible {
+  background: linear-gradient(135deg, #1fc35d 0%, #0f7a6e 100%);
+}
+
+.btn-instagram {
+  background: linear-gradient(135deg, #f58529 0%, #dd2a7b 55%, #515bd4 100%);
+  border: 1px solid rgba(221, 42, 123, 0.28);
+  color: #fff9fd;
+}
+
+.btn-instagram:hover,
+.btn-instagram:focus-visible {
+  background: linear-gradient(135deg, #e97921 0%, #c61f6a 55%, #4751c0 100%);
+}
+
+.btn-light-save {
+  background: linear-gradient(135deg, #b45309 0%, #92400e 100%);
+  border: 1px solid rgba(146, 64, 14, 0.34);
+  color: #fffaf0;
+}
+
+.btn-light-save:hover,
+.btn-light-save:focus-visible {
+  background: linear-gradient(135deg, #9a3412 0%, #7c2d12 100%);
+}
+
+.surface-instagram {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(221, 42, 123, 0.14);
+}
+
+.surface-instagram::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(245, 133, 41, 0.12), rgba(221, 42, 123, 0.08), rgba(81, 91, 212, 0.1));
+  pointer-events: none;
+}
+
+.str-chat__channel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(to bottom, #c9e8c9, #b7e7bb);
+  height: 100%;
+}
+
+.str-chat__container {
+  max-width: 1200px;
+  width: 100%;
+  height: 80% !important;
+  margin: 0 auto !important;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+}
+
+.str-chat__list {
+  background-color: #ffffff;
+  padding: 12px;
+}
+
+.str-chat__list-notifications {
+  display: none;
+}
+
+.str-chat__message-input {
+  border-top: 1px solid #ddd;
+}
