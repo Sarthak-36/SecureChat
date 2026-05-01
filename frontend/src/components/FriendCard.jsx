@@ -34,8 +34,8 @@ const FriendCard = ({ friend, isOnline = false, showOnlineStatus = false }) => {
 
   return (
     <div className="rounded-2xl bg-base-200 p-4 shadow-sm transition-shadow hover:shadow-md">
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0 flex items-center gap-3">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex flex-1 items-center gap-3 overflow-hidden">
           <ToggleDropdown
             contentClassName="w-56 rounded-2xl border border-base-300 bg-base-100 p-3 shadow-xl"
             renderTrigger={({ toggle }) => (
@@ -60,11 +60,13 @@ const FriendCard = ({ friend, isOnline = false, showOnlineStatus = false }) => {
               </button>
             )}
           </ToggleDropdown>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1 overflow-hidden">
+            <div className="flex min-w-0 items-center gap-2">
               <h3 className="truncate font-semibold">{friend.fullName}</h3>
               {showOnlineStatus ? (
-                <span className={`inline-flex items-center gap-1 text-xs ${isOnline ? "text-success" : "opacity-50"}`}>
+                <span
+                  className={`inline-flex shrink-0 items-center gap-1 text-xs ${isOnline ? "text-success" : "opacity-50"}`}
+                >
                   <span className={`size-2 rounded-full ${isOnline ? "bg-success" : "bg-base-content/30"}`} />
                   {isOnline ? "Online" : "Offline"}
                 </span>
@@ -73,7 +75,19 @@ const FriendCard = ({ friend, isOnline = false, showOnlineStatus = false }) => {
                 <span className="badge badge-primary badge-sm shrink-0">{friend.unreadCount}</span>
               ) : null}
             </div>
-            <p className="truncate text-sm opacity-70">{subtitle}</p>
+            <p
+              className="mt-0.5 overflow-hidden text-sm leading-5 opacity-70"
+              style={{
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                wordBreak: "break-word",
+                overflowWrap: "anywhere",
+              }}
+              title={subtitle}
+            >
+              {subtitle}
+            </p>
           </div>
         </div>
 

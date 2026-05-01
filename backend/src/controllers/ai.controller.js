@@ -6,7 +6,10 @@ import {
   analyzeImageContent,
   analyzeLinkContent,
   analyzeTextContent,
+  describeImageContent,
   CURRENT_TEXT_AI_MODELS,
+  summarizeTextContent,
+  translateTextToEnglish,
 } from "../lib/ai.js";
 import { query } from "../lib/db.js";
 
@@ -92,6 +95,7 @@ const respondWithCachedCheck = (res, cachedRow) => {
     ...cachedRow.payload,
     cached: true,
     cachedAt: cachedRow.updated_at,
+    cacheStatus: "reused",
   });
 };
 
@@ -104,6 +108,12 @@ const isTextCheckCacheCompatible = (cachedRow) => {
 
   return CURRENT_TEXT_AI_MODELS.every((model) => cachedModels.includes(model));
 };
+
+const isImageDescriptionCacheCompatible = (cachedRow) =>
+  Boolean(
+    cachedRow?.payload?.description?.descriptionText &&
+      cachedRow?.payload?.description?.models?.imageDescription
+  );
 
 export async function detectMessageImage(req, res) {
   try {
@@ -254,6 +264,161 @@ export async function detectMessageLinks(req, res) {
     });
   } catch (error) {
     console.error("Error in detectMessageLinks controller:", error);
+    const statusCode = error.statusCode || 500;
+    res.status(statusCode).json({ message: error.publicMessage || "Internal Server Error" });
+  }
+}
+
+export async function translateMessageToEnglish(req, res) {
+  try {
+    const { id: messageId } = req.params;
+    const currentUserId = req.user._id;
+    const force = Boolean(req.body?.force);
+    const message = await getAccessibleMessage({ messageId, currentUserId });
+
+    if (!message) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+
+    const text = message.text?.trim();
+
+    if (!text) {
+      return res.status(400).json({ message: "Translation only supports messages with text" });
+    }
+
+    if (!force) {
+      const cachedCheck = await getCachedCheck({ messageId, checkType: "translate" });
+      if (cachedCheck) {
+        return respondWithCachedCheck(res, cachedCheck);
+      }
+    }
+
+    const translation = await translateTextToEnglish({ text });
+    const payload = {
+      success: true,
+      messageId,
+      checkType: "translate",
+      text,
+      translation,
+    };
+
+    await upsertCachedCheck({ messageId, checkType: "translate", payload });
+
+    res.status(200).json({
+      ...payload,
+      cached: false,
+      cachedAt: translation.checkedAt,
+      cacheStatus: force ? "refreshed" : "fresh",
+    });
+  } catch (error) {
+    console.error("Error in translateMessageToEnglish controller:", error);
+    const statusCode = error.statusCode || 500;
+    res.status(statusCode).json({ message: error.publicMessage || "Internal Server Error" });
+  }
+}
+
+export async function summarizeMessageText(req, res) {
+  try {
+    const { id: messageId } = req.params;
+    const currentUserId = req.user._id;
+    const force = Boolean(req.body?.force);
+    const message = await getAccessibleMessage({ messageId, currentUserId });
+
+    if (!message) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+
+    const text = message.text?.trim();
+
+    if (!text) {
+      return res.status(400).json({ message: "Summarization only supports messages with text" });
+    }
+
+    if (!force) {
+      const cachedCheck = await getCachedCheck({ messageId, checkType: "summarize" });
+      if (cachedCheck) {
+        return respondWithCachedCheck(res, cachedCheck);
+      }
+    }
+
+    const summary = await summarizeTextContent({ text });
+    const payload = {
+      success: true,
+      messageId,
+      checkType: "summarize",
+      text,
+      summary,
+    };
+
+    await upsertCachedCheck({ messageId, checkType: "summarize", payload });
+
+    res.status(200).json({
+      ...payload,
+      cached: false,
+      cachedAt: summary.checkedAt,
+      cacheStatus: force ? "refreshed" : "fresh",
+    });
+  } catch (error) {
+    console.error("Error in summarizeMessageText controller:", error);
+    const statusCode = error.statusCode || 500;
+    res.status(statusCode).json({ message: error.publicMessage || "Internal Server Error" });
+  }
+}
+
+export async function describeMessageImage(req, res) {
+  try {
+    const { id: messageId } = req.params;
+    const currentUserId = req.user._id;
+    const force = Boolean(req.body?.force);
+    const message = await getAccessibleMessage({ messageId, currentUserId });
+
+    if (!message) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+
+    const attachment = getAttachmentFromMessage(message);
+
+    if (!attachment?.url || attachment.type !== "image") {
+      return res.status(400).json({ message: "Image description only supports image attachments" });
+    }
+
+    if (!force) {
+      const cachedCheck = await getCachedCheck({ messageId, checkType: "describe_image" });
+      if (cachedCheck && isImageDescriptionCacheCompatible(cachedCheck)) {
+        return respondWithCachedCheck(res, cachedCheck);
+      }
+    }
+
+    const filePath = resolveAttachmentPath(attachment.url);
+    const fileBuffer = await fs.readFile(filePath);
+    const description = await describeImageContent({
+      buffer: fileBuffer,
+      mimeType: attachment.mimeType,
+      attachmentName: attachment.name,
+    });
+    const payload = {
+      success: true,
+      messageId,
+      checkType: "describe_image",
+      attachment: {
+        name: attachment.name,
+        type: attachment.type,
+        mimeType: attachment.mimeType,
+        url: attachment.url,
+      },
+      description,
+    };
+
+    await upsertCachedCheck({ messageId, checkType: "describe_image", payload });
+
+    res.status(200).json({
+      ...payload,
+      cached: false,
+      cachedAt: description.checkedAt,
+      cacheStatus: force ? "refreshed" : "fresh",
+    });
+  } catch (error) {
+    console.error("Error in describeMessageImage controller:", error);
     const statusCode = error.statusCode || 500;
     res.status(statusCode).json({ message: error.publicMessage || "Internal Server Error" });
   }

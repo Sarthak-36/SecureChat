@@ -12,6 +12,7 @@ import TypingIndicator from "../components/chat/TypingIndicator";
 import useAuthUser from "../hooks/useAuthUser";
 import {
   clearConversation,
+  describeImageMessage,
   deleteMessage,
   detectImageMessage,
   detectLinkMessage,
@@ -21,6 +22,8 @@ import {
   getUserFriends,
   hideMessageForMe,
   removeFriend,
+  summarizeMessage,
+  translateMessageToEnglish,
   uploadChatAttachment,
 } from "../lib/api";
 import { getWebSocketUrl } from "../lib/realtime";
@@ -70,6 +73,8 @@ const ChatPage = () => {
   const [aiDetectionResult, setAiDetectionResult] = useState(null);
   const [detectingMessageId, setDetectingMessageId] = useState(null);
   const [checkingLinkMessageId, setCheckingLinkMessageId] = useState(null);
+  const [summarizingMessageId, setSummarizingMessageId] = useState(null);
+  const [describingImageMessageId, setDescribingImageMessageId] = useState(null);
   const [isRecheckingDetection, setIsRecheckingDetection] = useState(false);
   const [messageSearch, setMessageSearch] = useState("");
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
@@ -78,6 +83,8 @@ const ChatPage = () => {
   const [targetUserReadAt, setTargetUserReadAt] = useState(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState(null);
   const [isTargetUserOnline, setIsTargetUserOnline] = useState(false);
+  const [translatedMessages, setTranslatedMessages] = useState({});
+  const [translatingMessageId, setTranslatingMessageId] = useState(null);
   const [activeSearchMatchIndex, setActiveSearchMatchIndex] = useState(0);
 
   const { authUser } = useAuthUser();
@@ -183,9 +190,22 @@ const ChatPage = () => {
     mutationFn: ({ messageId, force }) => detectLinkMessage(messageId, { force }),
   });
 
+  const { mutateAsync: translateMessageMutation } = useMutation({
+    mutationFn: ({ messageId, force }) => translateMessageToEnglish(messageId, { force }),
+  });
+
+  const { mutateAsync: summarizeMessageMutation } = useMutation({
+    mutationFn: ({ messageId, force }) => summarizeMessage(messageId, { force }),
+  });
+
+  const { mutateAsync: describeImageMessageMutation } = useMutation({
+    mutationFn: ({ messageId, force }) => describeImageMessage(messageId, { force }),
+  });
+
   useEffect(() => {
     setMessages(history);
     setTargetUserReadAt(getLatestReadAt(history));
+    setTranslatedMessages({});
   }, [history]);
 
   useEffect(() => {
@@ -633,6 +653,93 @@ const ChatPage = () => {
     }
   };
 
+  const handleTranslateMessage = async (message, { force = false } = {}) => {
+    const text = message.text?.trim();
+    if (!text) {
+      toast.error("Translation only supports text messages");
+      return;
+    }
+
+    setTranslatingMessageId(message._id);
+
+    try {
+      const result = await translateMessageMutation({ messageId: message._id, force });
+      setTranslatedMessages((currentTranslations) => ({
+        ...currentTranslations,
+        [message._id]: result,
+      }));
+      const translationToastMessages = {
+        reused: "Showing saved translation",
+        refreshed: "Translation refreshed",
+        fresh: "Translated to English",
+      };
+      toast.success(
+        translationToastMessages[result.cacheStatus] ||
+          (force ? "Translation refreshed" : result.cached ? "Showing saved translation" : "Translated to English")
+      );
+    } catch (error) {
+      toast.error(error?.response?.data?.message || "Could not translate this message");
+    } finally {
+      setTranslatingMessageId(null);
+    }
+  };
+
+  const handleRetryTranslation = (message) => {
+    handleTranslateMessage(message, { force: true });
+  };
+
+  const handleSummarizeMessage = async (message, { force = false } = {}) => {
+    const text = message.text?.trim();
+    if (!text) {
+      toast.error("Summarization only supports text messages");
+      return;
+    }
+
+    setSummarizingMessageId(message._id);
+
+    try {
+      const result = await summarizeMessageMutation({ messageId: message._id, force });
+      setAiDetectionResult(result);
+      toast.success(
+        force
+          ? "Summary refreshed"
+          : result.cached
+            ? "Showing saved summary"
+            : "Summary ready"
+      );
+    } catch (error) {
+      toast.error(error?.response?.data?.message || "Could not summarize this message");
+    } finally {
+      setSummarizingMessageId(null);
+    }
+  };
+
+  const handleDescribeImageMessage = async (message, { force = false } = {}) => {
+    const attachment = message.metadata?.attachments?.[0];
+    if (attachment?.type !== "image") {
+      toast.error("Image description only supports image attachments");
+      return;
+    }
+
+    setDescribingImageMessageId(message._id);
+
+    try {
+      const result = await describeImageMessageMutation({ messageId: message._id, force });
+      setAiDetectionResult(result);
+      toast.success(
+        force
+          ? "Image description refreshed"
+          : result.cached
+            ? "Showing saved image description"
+            : "Image description ready"
+      );
+    } catch (error) {
+      toast.error(error?.response?.data?.message || "Could not describe this image");
+    } finally {
+      setDescribingImageMessageId(null);
+    }
+  };
+
   const handleRecheckDetection = async () => {
     if (!aiDetectionResult?.messageId) return;
 
@@ -647,9 +754,20 @@ const ChatPage = () => {
     try {
       if (aiDetectionResult.checkType === "link") {
         await runLinkCheckForMessage(message, { force: true });
-      } else {
-        await runDetectionForMessage(message, { force: true });
+        return;
       }
+
+      if (aiDetectionResult.checkType === "summarize") {
+        await handleSummarizeMessage(message, { force: true });
+        return;
+      }
+
+      if (aiDetectionResult.checkType === "describe_image") {
+        await handleDescribeImageMessage(message, { force: true });
+        return;
+      }
+
+      await runDetectionForMessage(message, { force: true });
     } finally {
       setIsRecheckingDetection(false);
     }
@@ -710,19 +828,27 @@ const ChatPage = () => {
               key={message._id}
               authUserId={authUser._id}
               checkingLinkMessageId={checkingLinkMessageId}
+              describingImageMessageId={describingImageMessageId}
               detectingMessageId={detectingMessageId}
               isActiveSearchMatch={activeSearchMessageId === message._id}
               isHighlighted={highlightedMessageId === message._id}
+              isRunningSummarize={summarizingMessageId === message._id}
+              isRunningTranslation={translatingMessageId === message._id}
               message={message}
               onDeleteForEveryone={deleteMessageMutation}
               onDeleteForMe={hideMessageMutation}
+              onDescribeImage={handleDescribeImageMessage}
               onJumpToReply={handleJumpToMessage}
               onReply={handleReplyToMessage}
               onRunDetection={runDetectionForMessage}
               onRunLinkCheck={runLinkCheckForMessage}
+              onRetryTranslation={handleRetryTranslation}
+              onSummarize={handleSummarizeMessage}
+              onTranslate={handleTranslateMessage}
               readAt={targetUserReadAt}
               registerMessageNode={registerMessageNode}
               searchTerm={normalizedMessageSearch}
+              translationResult={translatedMessages[message._id]}
             />
           ))}
           {typingUserId === targetUserId ? <TypingIndicator name={targetUser?.fullName} /> : null}

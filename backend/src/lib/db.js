@@ -87,7 +87,7 @@ const schemaQueries = [
   `
     CREATE TABLE IF NOT EXISTS ai_message_checks (
       message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-      check_type TEXT NOT NULL CHECK (check_type IN ('image', 'text', 'link')),
+      check_type TEXT NOT NULL CHECK (check_type IN ('image', 'text', 'link', 'translate', 'summarize', 'describe_image')),
       payload JSONB NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -103,9 +103,13 @@ const schemaQueries = [
     DROP CONSTRAINT IF EXISTS ai_message_checks_check_type_check;
   `,
   `
+    DELETE FROM ai_message_checks
+    WHERE check_type NOT IN ('image', 'text', 'link', 'translate', 'summarize', 'describe_image');
+  `,
+  `
     ALTER TABLE ai_message_checks
     ADD CONSTRAINT ai_message_checks_check_type_check
-    CHECK (check_type IN ('image', 'text', 'link'));
+    CHECK (check_type IN ('image', 'text', 'link', 'translate', 'summarize', 'describe_image'));
   `,
   `
     UPDATE users

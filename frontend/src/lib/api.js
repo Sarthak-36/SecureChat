@@ -145,3 +145,24 @@ export async function detectLinkMessage(messageId, options = {}) {
   });
   return response.data;
 }
+
+export async function translateMessageToEnglish(messageId, options = {}) {
+  const response = await axiosInstance.post(`/ai/messages/${messageId}/translate`, {
+    force: Boolean(options.force),
+  });
+  return response.data;
+}
+
+export async function summarizeMessage(messageId, options = {}) {
+  const response = await axiosInstance.post(`/ai/messages/${messageId}/summarize`, {
+    force: Boolean(options.force),
+  });
+  return response.data;
+}
+
+export async function describeImageMessage(messageId, options = {}) {
+  const response = await axiosInstance.post(`/ai/messages/${messageId}/describe-image`, {
+    force: Boolean(options.force),
+  });
+  return response.data;
+}
