@@ -3,8 +3,10 @@ const SAFE_BROWSING_API_URL = "https://safebrowsing.googleapis.com/v4/threatMatc
 const DEFAULT_NSFW_MODEL = process.env.HF_NSFW_MODEL || "Falconsai/nsfw_image_detection";
 const DEFAULT_AI_IMAGE_MODEL =
   process.env.HF_AI_IMAGE_MODEL || "prithivMLmods/deepfake-detector-model-v1";
-const DEFAULT_TEXT_MODERATION_MODEL =
-  process.env.HF_TEXT_MODERATION_MODEL || "facebook/roberta-hate-speech-dynabench-r4-target";
+const DEFAULT_TEXT_AI_MODEL =
+  process.env.HF_TEXT_AI_MODEL ||
+  process.env.HF_TEXT_MODERATION_MODEL ||
+  "Hello-SimpleAI/chatgpt-detector-roberta";
 const DEFAULT_LINK_PHISHING_MODEL =
   process.env.HF_LINK_PHISHING_MODEL || "ealvaradob/bert-finetuned-phishing";
 const NSFW_LABELS = new Set(["nsfw", "porn", "hentai", "sexy", "explicit"]);
@@ -25,9 +27,9 @@ const HUMAN_IMAGE_LABELS = new Set([
   "realism",
 ]);
 const MODEL_LABEL_MAPPINGS = {
-  "facebook/roberta-hate-speech-dynabench-r4-target": {
-    LABEL_0: "not_hate",
-    LABEL_1: "hate",
+  "Hello-SimpleAI/chatgpt-detector-roberta": {
+    LABEL_0: "human",
+    LABEL_1: "chatgpt",
   },
   "ealvaradob/bert-finetuned-phishing": {
     LABEL_0: "benign",
@@ -204,6 +206,21 @@ const normalizePredictions = (payload) => {
     .sort((left, right) => right.score - left.score);
 };
 
+const prepareTextForModel = (text, model) => {
+  if (!model?.includes("twitter-roberta")) {
+    return text;
+  }
+
+  return text
+    .split(/\s+/)
+    .map((token) => {
+      if (token.startsWith("@") && token.length > 1) return "@user";
+      if (/^(https?:\/\/|www\.)/i.test(token)) return "http";
+      return token;
+    })
+    .join(" ");
+};
+
 const mapPredictionLabels = (predictions, model) => {
   const labelMapping = MODEL_LABEL_MAPPINGS[model] || {};
 
@@ -245,6 +262,7 @@ const runImageClassification = async ({ buffer, mimeType, model }) => {
 
 const runTextClassification = async ({ text, model }) => {
   ensureInferenceConfigured();
+  const preparedText = prepareTextForModel(text, model);
 
   const response = await fetch(`${HF_API_BASE_URL}/${model}`, {
     method: "POST",
@@ -254,7 +272,7 @@ const runTextClassification = async ({ text, model }) => {
       Accept: "application/json",
     },
     body: JSON.stringify({
-      inputs: text,
+      inputs: preparedText,
       parameters: {
         top_k: 6,
       },
@@ -318,76 +336,105 @@ export async function analyzeImageContent({ buffer, mimeType }) {
   };
 }
 
-const safeTextLabels = new Set(["nothate", "nonhate", "safe", "neutral", "normal", "clean"]);
+const AI_TEXT_LABELS = new Set(["chatgpt", "ai", "generated", "machine", "llm", "gpt", "synthetic"]);
+const HUMAN_TEXT_LABELS = new Set(["human", "real", "authentic", "organic", "written_by_human"]);
 
-const harmfulTextLabels = new Set([
-  "hate",
-  "toxic",
-  "toxicity",
-  "offensive",
-  "abusive",
-  "harassment",
-  "threat",
-  "insult",
-  "obscene",
-  "identity_attack",
-]);
+export const CURRENT_TEXT_AI_MODELS = [DEFAULT_TEXT_AI_MODEL];
 
-const summarizeTextModeration = (predictions) => {
-  const harmfulMatch = pickTopMatch(predictions, (label) => {
-    if (safeTextLabels.has(label)) return false;
-    if (harmfulTextLabels.has(label)) return true;
-    return (
-      label.includes("toxic") ||
-      label.includes("hate") ||
-      label.includes("offensive") ||
-      label.includes("abusive") ||
-      label.includes("harass") ||
-      label.includes("threat") ||
-      label.includes("insult")
-    );
-  });
-
-  const safeMatch = pickTopMatch(
+const summarizeAiGeneratedText = (predictions) => {
+  const aiMatch = pickTopMatch(
     predictions,
     (label) =>
-      safeTextLabels.has(label) ||
-      label.includes("not_hate") ||
-      label.includes("not hate") ||
-      label.includes("non-toxic")
+      AI_TEXT_LABELS.has(label) ||
+      label.includes("chatgpt") ||
+      label.includes("generated") ||
+      label.includes("machine") ||
+      label.includes("gpt") ||
+      label.includes("ai")
   );
 
-  const harmfulScore = harmfulMatch?.score || 0;
+  const humanMatch = pickTopMatch(
+    predictions,
+    (label) =>
+      HUMAN_TEXT_LABELS.has(label) ||
+      label.includes("human") ||
+      label.includes("authentic") ||
+      label.includes("organic")
+  );
+
+  const fallbackTopPrediction = predictions[0] || null;
+  const derivedAiScore =
+    aiMatch?.score ??
+    (fallbackTopPrediction && AI_TEXT_LABELS.has(normalizeLabel(fallbackTopPrediction.label))
+      ? fallbackTopPrediction.score
+      : null);
+  const derivedHumanScore =
+    humanMatch?.score ??
+    (fallbackTopPrediction && HUMAN_TEXT_LABELS.has(normalizeLabel(fallbackTopPrediction.label))
+      ? fallbackTopPrediction.score
+      : null);
+  const aiScore =
+    derivedAiScore ??
+    (typeof derivedHumanScore === "number" ? Math.max(0, 1 - derivedHumanScore) : 0);
+  const humanScore =
+    derivedHumanScore ??
+    (typeof derivedAiScore === "number" ? Math.max(0, 1 - derivedAiScore) : Math.max(0, 1 - aiScore));
 
   return {
-    topPrediction: predictions[0] || null,
-    harmfulScore,
-    harmfulPercent: toPercent(harmfulScore),
-    safePercent: toPercent(safeMatch?.score || Math.max(0, 1 - harmfulScore)),
-    flagged: harmfulScore >= 0.5,
-    status:
-      harmfulScore >= 0.8 ? "high_risk" : harmfulScore >= 0.5 ? "review" : "clear",
+    topPrediction: fallbackTopPrediction,
+    aiScore,
+    aiPercent: toPercent(aiScore),
+    humanScore,
+    humanPercent: toPercent(humanScore),
+    flagged: aiScore >= 0.6,
+    status: aiScore >= 0.8 ? "likely_ai" : aiScore >= 0.6 ? "possible_ai" : "likely_real",
+  };
+};
+
+const summarizeOverallTextAiResult = (summary) => {
+  if (summary.status === "likely_ai") {
+    return {
+      status: "likely_ai",
+      label: "Likely AI-generated",
+      message: "The detector strongly suggests this text was generated by AI.",
+    };
+  }
+
+  if (summary.status === "possible_ai") {
+    return {
+      status: "possible_ai",
+      label: "Possibly AI-generated",
+      message: "The detector found moderate signs that this text may be AI-generated.",
+    };
+  }
+
+  return {
+    status: "likely_real",
+    label: "Likely human-written",
+    message: "The detector found stronger signs of human-written text than AI-generated text.",
   };
 };
 
 export async function analyzeTextContent({ text }) {
   const predictions = await runTextClassification({
     text,
-    model: DEFAULT_TEXT_MODERATION_MODEL,
+    model: DEFAULT_TEXT_AI_MODEL,
   });
+  const summary = summarizeAiGeneratedText(predictions);
 
   return {
     checkedAt: new Date().toISOString(),
     models: {
-      moderation: DEFAULT_TEXT_MODERATION_MODEL,
+      aiGeneratedText: DEFAULT_TEXT_AI_MODEL,
     },
-    moderation: {
+    overall: summarizeOverallTextAiResult(summary),
+    aiGeneratedText: {
       predictions: predictions.map((prediction) => ({
         label: prediction.label,
         score: prediction.score,
         percent: toPercent(prediction.score),
       })),
-      summary: summarizeTextModeration(predictions),
+      summary,
     },
   };
 }

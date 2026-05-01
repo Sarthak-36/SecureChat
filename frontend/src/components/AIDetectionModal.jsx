@@ -10,9 +10,9 @@ const detectionToneByStatus = {
 };
 
 const legacyModelLabelMappings = {
-  "facebook/roberta-hate-speech-dynabench-r4-target": {
-    LABEL_0: "Not Hate",
-    LABEL_1: "Hate",
+  "Hello-SimpleAI/chatgpt-detector-roberta": {
+    LABEL_0: "Human",
+    LABEL_1: "ChatGPT",
   },
   "ealvaradob/bert-finetuned-phishing": {
     LABEL_0: "Benign",
@@ -247,6 +247,35 @@ const ImageOverallResultCard = ({ overall, nsfwSummary, aiSummary }) => (
   </div>
 );
 
+const TextOverallResultCard = ({ overall, summary }) => (
+  <div className="rounded-2xl border border-base-300 bg-base-200 p-4">
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0">
+        <h3 className="font-semibold">Final result</h3>
+        <p className="mt-1 text-sm opacity-80">{overall?.message}</p>
+      </div>
+      <span
+        className={`badge h-auto max-w-full self-start whitespace-normal px-3 py-2 text-left leading-tight sm:max-w-[12rem] sm:self-auto sm:text-right ${
+          detectionToneByStatus[overall?.status] || "badge-ghost"
+        }`}
+      >
+        {overall?.label || "No summary"}
+      </span>
+    </div>
+
+    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+      <div className="rounded-xl bg-base-100 px-3 py-2">
+        <p className="text-xs uppercase tracking-wide opacity-60">AI generated</p>
+        <p className="text-lg font-semibold">{summary?.aiPercent ?? 0}%</p>
+      </div>
+      <div className="rounded-xl bg-base-100 px-3 py-2">
+        <p className="text-xs uppercase tracking-wide opacity-60">Human score</p>
+        <p className="text-lg font-semibold">{summary?.humanPercent ?? 0}%</p>
+      </div>
+    </div>
+  </div>
+);
+
 const TextDetectionSummaryCard = ({
   summary,
   predictions = [],
@@ -391,15 +420,19 @@ const AIDetectionModal = ({ result, isRechecking, onClose, onRecheck }) => {
               <p className="mb-2 font-medium">Checked text</p>
               <p className="whitespace-pre-wrap break-words opacity-80">{result.text}</p>
             </div>
+            <TextOverallResultCard
+              overall={result.analysis.overall}
+              summary={result.analysis.aiGeneratedText.summary}
+            />
             <TextDetectionSummaryCard
-              summary={result.analysis.moderation.summary}
-              predictions={result.analysis.moderation.predictions}
-              modelName={result.analysis.models.moderation}
-              title="Text Moderation"
-              riskLabel="Hate risk"
-              safeLabel="Not hate score"
-              riskValueKey="harmfulPercent"
-              safeValueKey="safePercent"
+              summary={result.analysis.aiGeneratedText.summary}
+              predictions={result.analysis.aiGeneratedText.predictions}
+              modelName={result.analysis.models.aiGeneratedText}
+              title="AI Text Detection"
+              riskLabel="AI generated"
+              safeLabel="Human score"
+              riskValueKey="aiPercent"
+              safeValueKey="humanPercent"
             />
           </>
         )}

@@ -2,7 +2,12 @@ import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import { analyzeImageContent, analyzeLinkContent, analyzeTextContent } from "../lib/ai.js";
+import {
+  analyzeImageContent,
+  analyzeLinkContent,
+  analyzeTextContent,
+  CURRENT_TEXT_AI_MODELS,
+} from "../lib/ai.js";
 import { query } from "../lib/db.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -90,6 +95,16 @@ const respondWithCachedCheck = (res, cachedRow) => {
   });
 };
 
+const isTextCheckCacheCompatible = (cachedRow) => {
+  const cachedModels = [cachedRow?.payload?.analysis?.models?.aiGeneratedText].filter(Boolean);
+
+  if (!cachedRow?.payload?.analysis?.aiGeneratedText?.summary) {
+    return false;
+  }
+
+  return CURRENT_TEXT_AI_MODELS.every((model) => cachedModels.includes(model));
+};
+
 export async function detectMessageImage(req, res) {
   try {
     const { id: messageId } = req.params;
@@ -167,7 +182,7 @@ export async function detectMessageText(req, res) {
 
     if (!force) {
       const cachedCheck = await getCachedCheck({ messageId, checkType: "text" });
-      if (cachedCheck) {
+      if (cachedCheck && isTextCheckCacheCompatible(cachedCheck)) {
         return respondWithCachedCheck(res, cachedCheck);
       }
     }
