@@ -62,6 +62,17 @@ const IncomingCallManager = () => {
         });
       }
 
+      if (payload.type === "call_invite_cancelled") {
+        setIncomingCall((currentCall) => {
+          if (currentCall?.callId === payload.callId) {
+            stopRingtone();
+            return null;
+          }
+
+          return currentCall;
+        });
+      }
+
       if (payload.type === "call_invite_response" && !payload.accepted && !location.pathname.startsWith("/call/")) {
         if (payload.reason === "busy") {
           toast.error(`${payload.responderName || "The other person"} is already on a call`);

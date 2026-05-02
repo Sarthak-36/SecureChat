@@ -371,23 +371,20 @@ wss.on("connection", (socket) => {
             createdAt: new Date().toISOString(),
           });
 
-          if (deliveredCount === 0) {
-            sendJson(socket, {
-              type: "call_invite_response",
-              callId: payload.callId,
-              accepted: false,
-              recipientId: payload.recipientId,
-              reason: "unavailable",
-            });
-            break;
-          }
-
           clearPendingCallInvite(payload.callId);
           scheduleCallInviteTimeout({
             callId: payload.callId,
             callerId: socket.userId,
             recipientId: payload.recipientId,
           });
+
+          if (deliveredCount === 0) {
+            sendJson(socket, {
+              type: "call_invite_pending_offline",
+              callId: payload.callId,
+              recipientId: payload.recipientId,
+            });
+          }
           break;
         }
 
@@ -447,6 +444,27 @@ wss.on("connection", (socket) => {
 
         case "leave_call": {
           if (!payload.callId) return;
+          const pendingInvite = pendingCallInvites.get(payload.callId);
+
+          if (pendingInvite && socket.userId === pendingInvite.callerId) {
+            clearPendingCallInvite(payload.callId);
+            try {
+              await createMissedCallMessage({
+                callId: payload.callId,
+                callerId: pendingInvite.callerId,
+                recipientId: pendingInvite.recipientId,
+              });
+            } catch (error) {
+              console.error("Failed to save missed call message after caller ended call", error);
+            }
+            broadcastToUser(pendingInvite.recipientId, {
+              type: "call_invite_cancelled",
+              callId: payload.callId,
+              callerId: pendingInvite.callerId,
+              recipientId: pendingInvite.recipientId,
+            });
+          }
+
           removeFromSetMap(callRooms, payload.callId, socket);
           socket.subscriptions.calls.delete(payload.callId);
           broadcastToCallRoom(payload.callId, socket, {
