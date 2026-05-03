@@ -30,6 +30,8 @@ const socketsByUserId = new Map();
 const conversationSubscribers = new Map();
 const callRooms = new Map();
 const presenceSubscribers = new Map();
+const pendingCallInvites = new Map();
+const CALL_INVITE_TIMEOUT_MS = 30_000;
 
 const getConversationId = (userA, userB) => [userA, userB].sort().join(":");
 
@@ -131,6 +133,94 @@ const broadcastPresenceUpdate = (userId, isOnline) => {
       isOnline,
     });
   }
+};
+
+const clearPendingCallInvite = (callId) => {
+  const pendingInvite = pendingCallInvites.get(callId);
+  if (!pendingInvite) return null;
+
+  clearTimeout(pendingInvite.timeoutId);
+  pendingCallInvites.delete(callId);
+  return pendingInvite;
+};
+
+const createCallEventMetadata = (callId, status) => ({
+  callEvent: {
+    callId,
+    status,
+    kind: "video",
+  },
+});
+
+const createCallSystemMessage = async ({ callId, callerId, recipientId, text, status }) => {
+  const savedMessage = await query(
+    `
+      INSERT INTO messages (id, conversation_id, sender_id, recipient_id, text, message_type, metadata)
+      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+      RETURNING id, conversation_id, sender_id, recipient_id, text, message_type, metadata, created_at
+    `,
+    [
+      randomUUID(),
+      getConversationId(callerId, recipientId),
+      callerId,
+      recipientId,
+      text,
+      "system",
+      JSON.stringify(createCallEventMetadata(callId, status)),
+    ]
+  );
+
+  broadcastToConversation(savedMessage.rows[0].conversation_id, {
+    type: "chat_message",
+    message: serializeMessage(savedMessage.rows[0]),
+  });
+};
+
+const createMissedCallMessage = async ({ callId, callerId, recipientId }) =>
+  createCallSystemMessage({
+    callId,
+    callerId,
+    recipientId,
+    text: "Missed video call",
+    status: "missed",
+  });
+
+const createSuccessfulCallMessage = async ({ callId, callerId, recipientId }) =>
+  createCallSystemMessage({
+    callId,
+    callerId,
+    recipientId,
+    text: "Video call",
+    status: "completed",
+  });
+
+const scheduleCallInviteTimeout = ({ callId, callerId, recipientId }) => {
+  const timeoutId = setTimeout(async () => {
+    const clearedInvite = clearPendingCallInvite(callId);
+    if (!clearedInvite) return;
+
+    try {
+      await createMissedCallMessage({ callId, callerId, recipientId });
+    } catch (error) {
+      console.error("Failed to save missed call message", error);
+    }
+
+    const timeoutPayload = {
+      type: "call_invite_timeout",
+      callId,
+      callerId,
+      recipientId,
+    };
+
+    broadcastToUser(callerId, timeoutPayload);
+    broadcastToUser(recipientId, timeoutPayload);
+  }, CALL_INVITE_TIMEOUT_MS);
+
+  pendingCallInvites.set(callId, {
+    callerId,
+    recipientId,
+    timeoutId,
+  });
 };
 
 app.use(
@@ -281,13 +371,18 @@ wss.on("connection", (socket) => {
             createdAt: new Date().toISOString(),
           });
 
+          clearPendingCallInvite(payload.callId);
+          scheduleCallInviteTimeout({
+            callId: payload.callId,
+            callerId: socket.userId,
+            recipientId: payload.recipientId,
+          });
+
           if (deliveredCount === 0) {
             sendJson(socket, {
-              type: "call_invite_response",
+              type: "call_invite_pending_offline",
               callId: payload.callId,
-              accepted: false,
               recipientId: payload.recipientId,
-              reason: "unavailable",
             });
           }
           break;
@@ -295,6 +390,23 @@ wss.on("connection", (socket) => {
 
         case "call_invite_response": {
           if (!socket.userId || !payload.callId || !payload.recipientId) return;
+
+          const pendingInvite = clearPendingCallInvite(payload.callId);
+
+          if (payload.accepted) {
+            const callerId = pendingInvite?.callerId || payload.recipientId;
+            const recipientId = pendingInvite?.recipientId || socket.userId;
+
+            try {
+              await createSuccessfulCallMessage({
+                callId: payload.callId,
+                callerId,
+                recipientId,
+              });
+            } catch (error) {
+              console.error("Failed to save successful call message", error);
+            }
+          }
 
           broadcastToUser(payload.recipientId, {
             type: "call_invite_response",
@@ -332,6 +444,27 @@ wss.on("connection", (socket) => {
 
         case "leave_call": {
           if (!payload.callId) return;
+          const pendingInvite = pendingCallInvites.get(payload.callId);
+
+          if (pendingInvite && socket.userId === pendingInvite.callerId) {
+            clearPendingCallInvite(payload.callId);
+            try {
+              await createMissedCallMessage({
+                callId: payload.callId,
+                callerId: pendingInvite.callerId,
+                recipientId: pendingInvite.recipientId,
+              });
+            } catch (error) {
+              console.error("Failed to save missed call message after caller ended call", error);
+            }
+            broadcastToUser(pendingInvite.recipientId, {
+              type: "call_invite_cancelled",
+              callId: payload.callId,
+              callerId: pendingInvite.callerId,
+              recipientId: pendingInvite.recipientId,
+            });
+          }
+
           removeFromSetMap(callRooms, payload.callId, socket);
           socket.subscriptions.calls.delete(payload.callId);
           broadcastToCallRoom(payload.callId, socket, {

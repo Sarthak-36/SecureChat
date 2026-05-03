@@ -1,4 +1,4 @@
-import { SearchIcon, UserMinusIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronUpIcon, SearchIcon, UserMinusIcon, XIcon } from "lucide-react";
 
 import AvatarImage from "../AvatarImage";
 import CallButton from "../CallButton";
@@ -6,6 +6,7 @@ import ToggleDropdown from "../ToggleDropdown";
 
 const ChatHeader = ({
   handleVideoCall,
+  activeSearchMatchIndex,
   isClearingConversation,
   isRemovingFriend,
   isTargetUserOnline,
@@ -17,6 +18,8 @@ const ChatHeader = ({
   onClearConversation,
   onCollapseSearch,
   onExpandSearch,
+  onJumpToNextSearchMatch,
+  onJumpToPreviousSearchMatch,
   onRemoveFriend,
   socketReady,
   targetUser,
@@ -88,6 +91,22 @@ const ChatHeader = ({
                 className="w-40 bg-transparent"
               />
             </label>
+            <button
+              type="button"
+              className="btn btn-ghost btn-circle btn-sm"
+              onClick={onJumpToPreviousSearchMatch}
+              disabled={!matchingMessageCount}
+            >
+              <ChevronUpIcon className="size-4" />
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-circle btn-sm"
+              onClick={onJumpToNextSearchMatch}
+              disabled={!matchingMessageCount}
+            >
+              <ChevronDownIcon className="size-4" />
+            </button>
             <button type="button" className="btn btn-ghost btn-circle btn-sm" onClick={onCollapseSearch}>
               <XIcon className="size-4" />
             </button>
@@ -103,7 +122,9 @@ const ChatHeader = ({
     {isSearchExpanded && normalizedMessageSearch ? (
       <div className="mx-auto flex max-w-7xl items-center justify-between px-4 pb-3 text-sm opacity-70">
         <span>
-          {matchingMessageCount} message{matchingMessageCount === 1 ? "" : "s"} found
+          {matchingMessageCount === 0
+            ? "0 messages found"
+            : `${activeSearchMatchIndex + 1} of ${matchingMessageCount} matches`}
         </span>
         {matchingMessageCount === 0 ? <span>No matches for this search</span> : null}
       </div>

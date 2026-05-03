@@ -33,6 +33,31 @@ const rtcConfig = {
   iceServers: parseIceServers(),
 };
 
+const getStatusTone = (statusText) => {
+  const normalized = statusText.toLowerCase();
+
+  if (normalized.includes("connected")) {
+    return "badge-success";
+  }
+
+  if (
+    normalized.includes("failed") ||
+    normalized.includes("declined") ||
+    normalized.includes("offline") ||
+    normalized.includes("busy") ||
+    normalized.includes("unavailable") ||
+    normalized.includes("no answer")
+  ) {
+    return "badge-warning";
+  }
+
+  if (normalized.includes("preparing") || normalized.includes("joining") || normalized.includes("ringing")) {
+    return "badge-info";
+  }
+
+  return "badge-ghost";
+};
+
 const CallPage = () => {
   const { id: callId } = useParams();
   const location = useLocation();
@@ -54,6 +79,7 @@ const CallPage = () => {
 
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const callMode = searchParams.get("mode");
+  const peerId = searchParams.get("peer");
 
   const { authUser, isLoading } = useAuthUser();
   const { data: tokenData } = useQuery({
@@ -61,6 +87,10 @@ const CallPage = () => {
     queryFn: getChatToken,
     enabled: !!authUser,
   });
+
+  const statusTone = useMemo(() => getStatusTone(statusText), [statusText]);
+  const isConnected = statusText === "Connected";
+  const remoteLabel = peerId ? "Remote participant" : "Waiting for participant";
 
   const syncLocalMediaState = () => {
     if (!localStreamRef.current) return;
@@ -245,8 +275,10 @@ const CallPage = () => {
             remoteStreamRef.current = new MediaStream();
           }
 
-          if (payload.type === "call_invite_response" && payload.callId === callId && !payload.accepted) {
-            if (payload.reason === "declined") {
+          if (payload.type === "call_invite_response" && payload.callId === callId) {
+            if (payload.accepted) {
+              setStatusText("Answered. Connecting...");
+            } else if (payload.reason === "declined") {
               setStatusText("Call declined");
               toast.error(`${payload.responderName || "The other person"} declined the call`);
             } else if (payload.reason === "busy") {
@@ -256,6 +288,18 @@ const CallPage = () => {
               setStatusText("The other person is unavailable");
               toast.error("The other person is not available for a call right now");
             }
+          }
+
+          if (payload.type === "call_invite_pending_offline" && payload.callId === callId) {
+            setStatusText("The other person is offline. Waiting for timeout...");
+          }
+
+          if (payload.type === "call_invite_timeout" && payload.callId === callId) {
+            setStatusText("No answer");
+            toast.error("No one answered the call");
+            window.setTimeout(() => {
+              navigate(peerId ? `/chat/${peerId}` : "/");
+            }, 1200);
           }
 
           if (payload.type === "error") {
@@ -319,7 +363,7 @@ const CallPage = () => {
       }
       remoteStreamRef.current = null;
     };
-  }, [authUser, tokenData?.token, callId, callMode]);
+  }, [authUser, tokenData?.token, callId, callMode, navigate, peerId]);
 
   const toggleMute = () => {
     if (!localStreamRef.current) return;
@@ -352,38 +396,102 @@ const CallPage = () => {
   }
 
   return (
-    <div className="min-h-screen bg-base-300 px-4 py-6">
-      <div className="mx-auto max-w-6xl space-y-5">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">Video Call</h1>
-            <p className="text-sm opacity-70">{statusText}</p>
+    <div className="min-h-screen bg-base-300 px-3 py-4 sm:px-4 sm:py-6">
+      <div className="mx-auto max-w-6xl space-y-4">
+        <div className="rounded-[28px] border border-base-300 bg-base-100/95 p-4 shadow-xl backdrop-blur">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-2xl font-bold">Video Call</h1>
+                <span className={`badge ${statusTone}`}>{statusText}</span>
+              </div>
+              <p className="mt-2 max-w-2xl text-sm opacity-70">
+                {callMode === "outgoing"
+                  ? "Stay here while we connect your call. Your preview stays available so you can quickly check mic and camera."
+                  : "You are in the call room. Use the controls below to manage your mic and camera."}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="badge badge-outline">{isMuted ? "Mic off" : "Mic on"}</div>
+              <div className="badge badge-outline">{isCameraOff ? "Camera off" : "Camera on"}</div>
+            </div>
           </div>
-          <div className="badge badge-outline">Room {callId.slice(0, 8)}</div>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div className="rounded-3xl bg-neutral text-neutral-content overflow-hidden shadow-xl">
-            <video ref={localVideoRef} autoPlay playsInline muted className="h-[40vh] w-full object-cover" />
-            <div className="p-4 text-sm opacity-80">You</div>
+        <div className="relative overflow-hidden rounded-[32px] border border-base-300 bg-neutral text-neutral-content shadow-2xl">
+          <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between gap-3 bg-gradient-to-b from-black/60 via-black/25 to-transparent px-4 py-4">
+            <div>
+              <p className="text-sm font-medium text-white/90">{remoteLabel}</p>
+              <p className="text-xs text-white/65">{isConnected ? "Live video is active" : statusText}</p>
+            </div>
+            <span className={`badge border-none px-3 py-3 text-white ${statusTone}`}>
+              {isConnected ? "Live" : "Connecting"}
+            </span>
           </div>
 
-          <div className="rounded-3xl bg-neutral text-neutral-content overflow-hidden shadow-xl">
-            <video ref={remoteVideoRef} autoPlay playsInline className="h-[40vh] w-full object-cover" />
-            <div className="p-4 text-sm opacity-80">Remote participant</div>
+          <video
+            ref={remoteVideoRef}
+            autoPlay
+            playsInline
+            className="h-[52vh] w-full bg-neutral object-cover sm:h-[64vh] xl:h-[72vh]"
+          />
+
+          {!isConnected ? (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6">
+              <div className="rounded-3xl border border-white/10 bg-black/40 px-6 py-5 text-center shadow-lg backdrop-blur-md">
+                <p className="text-lg font-semibold text-white">{statusText}</p>
+                <p className="mt-2 text-sm text-white/70">
+                  Keep this screen open while the call invite is being handled.
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="absolute bottom-4 right-4 z-10 w-36 overflow-hidden rounded-3xl border border-white/15 bg-black/45 shadow-2xl backdrop-blur sm:w-44">
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className="h-24 w-full bg-neutral object-cover sm:h-28"
+            />
+            <div className="flex items-center justify-between px-3 py-2 text-xs text-white/80">
+              <span>You</span>
+              <span>{isCameraOff ? "Camera off" : "Live preview"}</span>
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center justify-center gap-3">
-          <button className="btn btn-circle" onClick={toggleMute} type="button">
-            {isMuted ? <MicOffIcon className="size-5" /> : <MicIcon className="size-5" />}
-          </button>
-          <button className="btn btn-circle" onClick={toggleCamera} type="button">
-            {isCameraOff ? <VideoOffIcon className="size-5" /> : <VideoIcon className="size-5" />}
-          </button>
-          <button className="btn btn-error btn-circle" onClick={leaveCall} type="button">
-            <PhoneOffIcon className="size-5" />
-          </button>
+        <div className="rounded-[28px] border border-base-300 bg-base-100/95 p-4 shadow-xl backdrop-blur">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-medium">Call controls</p>
+              <p className="text-sm opacity-65">Mute audio, pause camera, or leave the call.</p>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <button
+                className={`btn gap-2 rounded-2xl px-5 ${isMuted ? "btn-warning" : "btn-outline"}`}
+                onClick={toggleMute}
+                type="button"
+              >
+                {isMuted ? <MicOffIcon className="size-5" /> : <MicIcon className="size-5" />}
+                {isMuted ? "Unmute" : "Mute"}
+              </button>
+              <button
+                className={`btn gap-2 rounded-2xl px-5 ${isCameraOff ? "btn-warning" : "btn-outline"}`}
+                onClick={toggleCamera}
+                type="button"
+              >
+                {isCameraOff ? <VideoOffIcon className="size-5" /> : <VideoIcon className="size-5" />}
+                {isCameraOff ? "Turn camera on" : "Turn camera off"}
+              </button>
+              <button className="btn btn-error gap-2 rounded-2xl px-6" onClick={leaveCall} type="button">
+                <PhoneOffIcon className="size-5" />
+                End call
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
