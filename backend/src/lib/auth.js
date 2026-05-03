@@ -7,11 +7,18 @@ if (!authSecret) {
   console.error("JWT_SECRET_KEY is missing");
 }
 
+// export const cookieOptions = {
+//   maxAge: 7 * 24 * 60 * 60 * 1000,
+//   httpOnly: true,
+//   sameSite: "strict",
+//   secure: process.env.NODE_ENV === "production",
+// };
+
 export const cookieOptions = {
   maxAge: 7 * 24 * 60 * 60 * 1000,
   httpOnly: true,
-  sameSite: "strict",
-  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax",      // 🔥 IMPORTANT
+  secure: false,        // 🔥 IMPORTANT (no HTTPS yet)
 };
 
 export const signAuthToken = (userId) =>

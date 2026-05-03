@@ -238,6 +238,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/ai", aiRoutes);
+// app.use("/api", (req, res) => {res.send("hello")});
 
 wss.on("connection", (socket) => {
   socket.subscriptions = {

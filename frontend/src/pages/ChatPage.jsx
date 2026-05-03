@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
+import { v4 as uuidv4 } from "uuid";
 
 import AIDetectionModal from "../components/AIDetectionModal";
 import ChatLoader from "../components/ChatLoader";
@@ -376,19 +377,31 @@ const ChatPage = () => {
     targetNode.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [activeSearchMessageId]);
 
-  useEffect(() => {
-    if (!socketReady || !conversationId || !authUser?._id) return;
+  const lastMessageIdRef = useRef(null);
 
-    const latestMessage = messages[messages.length - 1];
-    if (latestMessage && latestMessage.senderId === targetUserId && document.visibilityState === "visible") {
-      socketRef.current?.send(
-        JSON.stringify({
-          type: "mark_conversation_read",
-          conversationId,
-        })
-      );
-    }
-  }, [authUser?._id, conversationId, messages, socketReady, targetUserId]);
+useEffect(() => {
+  if (!socketReady || !conversationId || !authUser?._id) return;
+
+  const latestMessage = messages[messages.length - 1];
+  if (!latestMessage) return;
+
+  // prevent infinite loop
+  if (lastMessageIdRef.current === latestMessage._id) return;
+
+  lastMessageIdRef.current = latestMessage._id;
+
+  if (
+    latestMessage.senderId === targetUserId &&
+    document.visibilityState === "visible"
+  ) {
+    socketRef.current?.send(
+      JSON.stringify({
+        type: "mark_conversation_read",
+        conversationId,
+      })
+    );
+  }
+}, [messages, socketReady, conversationId, authUser?._id, targetUserId]);
 
   const sendTypingState = (type) => {
     if (!socketReady || !socketRef.current || !conversationId) return;
@@ -559,23 +572,24 @@ const ChatPage = () => {
   };
 
   const handleVideoCall = () => {
-    if (!socketReady || !socketRef.current) {
-      toast.error("Chat connection is still loading");
-      return;
-    }
+  if (!socketReady || !socketRef.current) {
+    toast.error("Chat connection is still loading");
+    return;
+  }
 
-    const callId = crypto.randomUUID();
-    socketRef.current.send(
-      JSON.stringify({
-        type: "call_invite",
-        callId,
-        recipientId: targetUserId,
-      })
-    );
+  const callId = uuidv4();
 
-    toast.success(`Calling ${targetUser?.fullName || "your friend"}...`);
-    navigate(`/call/${callId}?mode=outgoing&peer=${targetUserId}`);
-  };
+  socketRef.current.send(
+    JSON.stringify({
+      type: "call_invite",
+      callId,
+      recipientId: targetUserId,
+    })
+  );
+
+  toast.success(`Calling ${targetUser?.fullName || "your friend"}...`);
+  navigate(`/call/${callId}?mode=outgoing&peer=${targetUserId}`);
+};
 
   const runDetectionForMessage = async (message, { force = false } = {}) => {
     const attachment = message.metadata?.attachments?.[0];

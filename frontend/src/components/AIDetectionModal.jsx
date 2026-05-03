@@ -149,7 +149,7 @@ const LinkResultCard = ({ linkResult, modelName }) => (
     </div>
 
     <div className="mt-3 space-y-2">
-      {linkResult.predictions.slice(0, 3).map((prediction) => (
+      {(linkResult.predictions || []).slice(0, 3).map((prediction) => (
         <div key={`${linkResult.url}-${prediction.label}`} className="flex items-center justify-between text-sm">
           <span className="truncate">{getReadableLabel(prediction, modelName)}</span>
           <span className="font-medium">{prediction.percent}%</span>
@@ -467,7 +467,7 @@ const AIDetectionModal = ({ result, isRechecking, onClose, onRecheck }) => {
           <div>
             <h2 className="text-xl font-semibold">{resultTitle}</h2>
             <p className="text-sm opacity-70">
-              {checkedLabel} checked at {new Date(checkedAt).toLocaleString()}
+              {checkedLabel} checked at {checkedAt ? new Date(checkedAt).toLocaleString() : "Unknown"}
             </p>
             <p className="mt-1 text-xs opacity-60">
               {result.cached ? "Showing saved result" : "Freshly checked just now"}
@@ -518,7 +518,7 @@ const AIDetectionModal = ({ result, isRechecking, onClose, onRecheck }) => {
             </div>
             <LinkOverallResultCard
               overall={result.analysis.overall}
-              phishingSummary={result.analysis.phishing.summary}
+              phishingSummary={result.analysis.phishing?.summary || null}
               reputationSummary={result.analysis.reputation}
               extractedLinks={result.extractedLinks}
             />
@@ -527,7 +527,7 @@ const AIDetectionModal = ({ result, isRechecking, onClose, onRecheck }) => {
                 reputationSummary={result.analysis.reputation}
                 modelName={result.analysis.models.reputation}
               />
-              {result.analysis.links.map((linkResult) => (
+              {(result.analysis?.links || []).map((linkResult) => (
                 <LinkResultCard
                   key={linkResult.url}
                   linkResult={linkResult}
