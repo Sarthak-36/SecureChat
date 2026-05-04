@@ -25,6 +25,7 @@ const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const backendRoot = path.resolve(__dirname, "..");
+const projectRoot = path.resolve(backendRoot, "..");
 
 const socketsByUserId = new Map();
 const conversationSubscribers = new Map();
@@ -546,10 +547,12 @@ server.on("upgrade", async (request, socket, head) => {
 });
 
 if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(__dirname, "../frontend/dist")));
+  const frontendDistPath = path.join(projectRoot, "frontend", "dist");
+
+  app.use(express.static(frontendDistPath));
 
   app.get("*", (req, res) => {
-    res.sendFile(path.join(__dirname, "../frontend", "dist", "index.html"));
+    res.sendFile(path.join(frontendDistPath, "index.html"));
   });
 }
 

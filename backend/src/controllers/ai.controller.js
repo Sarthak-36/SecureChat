@@ -395,6 +395,7 @@ export async function describeMessageImage(req, res) {
       buffer: fileBuffer,
       mimeType: attachment.mimeType,
       attachmentName: attachment.name,
+      attachmentUrl: attachment.url,
     });
     const payload = {
       success: true,

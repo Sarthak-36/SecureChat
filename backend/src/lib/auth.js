@@ -7,18 +7,24 @@ if (!authSecret) {
   console.error("JWT_SECRET_KEY is missing");
 }
 
-// export const cookieOptions = {
-//   maxAge: 7 * 24 * 60 * 60 * 1000,
-//   httpOnly: true,
-//   sameSite: "strict",
-//   secure: process.env.NODE_ENV === "production",
-// };
+const parseBooleanEnv = (value, fallback) => {
+  if (value === undefined) return fallback;
+  return value.toLowerCase() === "true";
+};
+
+const normalizeSameSite = (value) => {
+  const normalizedValue = value?.toLowerCase();
+  return ["strict", "lax", "none"].includes(normalizedValue) ? normalizedValue : "lax";
+};
+
+const cookieSecure = parseBooleanEnv(process.env.COOKIE_SECURE, false);
+const cookieSameSite = normalizeSameSite(process.env.COOKIE_SAME_SITE);
 
 export const cookieOptions = {
   maxAge: 7 * 24 * 60 * 60 * 1000,
   httpOnly: true,
-  sameSite: "lax",      // 🔥 IMPORTANT
-  secure: false,        // 🔥 IMPORTANT (no HTTPS yet)
+  sameSite: cookieSameSite,
+  secure: cookieSecure,
 };
 
 export const signAuthToken = (userId) =>
@@ -46,16 +52,15 @@ export const verifyWebSocketToken = (token) => {
 export const parseCookies = (cookieHeader = "") =>
   !cookieHeader
     ? {}
-    :
-  Object.fromEntries(
-    cookieHeader
-      .split(";")
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .map((part) => {
-        const separatorIndex = part.indexOf("=");
-        const key = part.slice(0, separatorIndex);
-        const value = part.slice(separatorIndex + 1);
-        return [key, decodeURIComponent(value)];
-      })
-  );
+    : Object.fromEntries(
+        cookieHeader
+          .split(";")
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .map((part) => {
+            const separatorIndex = part.indexOf("=");
+            const key = part.slice(0, separatorIndex);
+            const value = part.slice(separatorIndex + 1);
+            return [key, decodeURIComponent(value)];
+          })
+      );
