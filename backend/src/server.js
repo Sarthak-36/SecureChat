@@ -226,7 +226,8 @@ const scheduleCallInviteTimeout = ({ callId, callerId, recipientId }) => {
 
 app.use(
   cors({
-    origin: CLIENT_URL,
+    origin: "http://3.88.56.110",
+    // origin: true,
     credentials: true,
   })
 );
