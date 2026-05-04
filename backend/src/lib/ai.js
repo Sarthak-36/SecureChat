@@ -3,6 +3,7 @@
 import { spawn } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
+import sharp from "sharp";
 import { InferenceClient } from "@huggingface/inference";
 
 const HF_API_BASE_URL = "https://router.huggingface.co/hf-inference/models";
@@ -32,6 +33,9 @@ const DEFAULT_IMAGE_DESCRIPTION_VLM_MODEL =
 const IMAGE_DESCRIPTION_TIMEOUT_MS = Number(process.env.IMAGE_DESCRIPTION_TIMEOUT_MS || 15000);
 const ENABLE_LEGACY_IMAGE_DESCRIPTION_MODELS =
     process.env.ENABLE_LEGACY_IMAGE_DESCRIPTION_MODELS === "true";
+const IMAGE_DESCRIPTION_INLINE_IMAGE_MAX_BYTES = Number(
+    process.env.IMAGE_DESCRIPTION_INLINE_IMAGE_MAX_BYTES || 350000,
+);
 const DEFAULT_LANGUAGE_DETECTION_MODEL =
     process.env.HF_LANGUAGE_DETECTION_MODEL || "papluca/xlm-roberta-base-language-detection";
 const DEFAULT_LINK_PHISHING_MODEL =
@@ -758,10 +762,49 @@ const runImageToText = async ({ buffer, mimeType, model }) => {
 const runVisionChatImageDescription = async ({ attachmentUrl, buffer, mimeType, model }) => {
     ensureInferenceConfigured();
 
-    const imageReference =
-        typeof attachmentUrl === "string" && /^https?:\/\//i.test(attachmentUrl)
-            ? attachmentUrl
-            : `data:${mimeType || "image/png"};base64,${Buffer.from(buffer).toString("base64")}`;
+    const buildInlineImageDataUrl = async () => {
+        const candidates = [
+            { width: 768, quality: 60 },
+            { width: 640, quality: 50 },
+            { width: 512, quality: 40 },
+        ];
+
+        for (const candidate of candidates) {
+            const optimizedBuffer = await sharp(buffer)
+                .rotate()
+                .resize({
+                    width: candidate.width,
+                    height: candidate.width,
+                    fit: "inside",
+                    withoutEnlargement: true,
+                })
+                .webp({ quality: candidate.quality })
+                .toBuffer();
+
+            if (optimizedBuffer.length <= IMAGE_DESCRIPTION_INLINE_IMAGE_MAX_BYTES) {
+                return `data:image/webp;base64,${optimizedBuffer.toString("base64")}`;
+            }
+        }
+
+        const fallbackBuffer = await sharp(buffer)
+            .rotate()
+            .resize({
+                width: 384,
+                height: 384,
+                fit: "inside",
+                withoutEnlargement: true,
+            })
+            .webp({ quality: 35 })
+            .toBuffer();
+
+        return `data:image/webp;base64,${fallbackBuffer.toString("base64")}`;
+    };
+
+    const canUseRemoteUrl =
+        typeof attachmentUrl === "string" && /^https:\/\//i.test(attachmentUrl);
+    const imageReference = canUseRemoteUrl
+        ? attachmentUrl
+        : await buildInlineImageDataUrl();
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), IMAGE_DESCRIPTION_TIMEOUT_MS);
 
