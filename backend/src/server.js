@@ -32,6 +32,7 @@ const conversationSubscribers = new Map();
 const callRooms = new Map();
 const presenceSubscribers = new Map();
 const pendingCallInvites = new Map();
+const activeCallSessions = new Map();
 const CALL_INVITE_TIMEOUT_MS = 30_000;
 
 const getConversationId = (userA, userB) => [userA, userB].sort().join(":");
@@ -145,15 +146,24 @@ const clearPendingCallInvite = (callId) => {
   return pendingInvite;
 };
 
-const createCallEventMetadata = (callId, status) => ({
+const formatCallDuration = (durationSeconds = 0) => {
+  const safeDuration = Math.max(0, Number(durationSeconds) || 0);
+  const minutes = Math.floor(safeDuration / 60);
+  const seconds = safeDuration % 60;
+
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+};
+
+const createCallEventMetadata = (callId, status, extra = {}) => ({
   callEvent: {
     callId,
     status,
     kind: "video",
+    ...extra,
   },
 });
 
-const createCallSystemMessage = async ({ callId, callerId, recipientId, text, status }) => {
+const createCallSystemMessage = async ({ callId, callerId, recipientId, text, status, metadata = {} }) => {
   const savedMessage = await query(
     `
       INSERT INTO messages (id, conversation_id, sender_id, recipient_id, text, message_type, metadata)
@@ -167,7 +177,7 @@ const createCallSystemMessage = async ({ callId, callerId, recipientId, text, st
       recipientId,
       text,
       "system",
-      JSON.stringify(createCallEventMetadata(callId, status)),
+      JSON.stringify(createCallEventMetadata(callId, status, metadata)),
     ]
   );
 
@@ -186,14 +196,38 @@ const createMissedCallMessage = async ({ callId, callerId, recipientId }) =>
     status: "missed",
   });
 
-const createSuccessfulCallMessage = async ({ callId, callerId, recipientId }) =>
+const createCallEndedMessage = async ({ callId, callerId, recipientId, durationSeconds }) =>
   createCallSystemMessage({
     callId,
     callerId,
     recipientId,
-    text: "Video call",
-    status: "completed",
+    text: `Video call - ${formatCallDuration(durationSeconds)}`,
+    status: "ended",
+    metadata: {
+      durationSeconds,
+      durationLabel: formatCallDuration(durationSeconds),
+    },
   });
+
+const endActiveCallSession = async (callId) => {
+  const activeCall = activeCallSessions.get(callId);
+  if (!activeCall || activeCall.ended) return null;
+
+  activeCall.ended = true;
+  activeCallSessions.delete(callId);
+
+  const startTime = activeCall.startedAt || activeCall.acceptedAt || Date.now();
+  const durationSeconds = Math.max(0, Math.round((Date.now() - startTime) / 1000));
+
+  await createCallEndedMessage({
+    callId,
+    callerId: activeCall.callerId,
+    recipientId: activeCall.recipientId,
+    durationSeconds,
+  });
+
+  return { ...activeCall, durationSeconds };
+};
 
 const scheduleCallInviteTimeout = ({ callId, callerId, recipientId }) => {
   const timeoutId = setTimeout(async () => {
@@ -400,13 +434,24 @@ wss.on("connection", (socket) => {
             const recipientId = pendingInvite?.recipientId || socket.userId;
 
             try {
-              await createSuccessfulCallMessage({
-                callId: payload.callId,
+              activeCallSessions.set(payload.callId, {
                 callerId,
                 recipientId,
+                acceptedAt: Date.now(),
+                startedAt: null,
+                ended: false,
               });
             } catch (error) {
-              console.error("Failed to save successful call message", error);
+              console.error("Failed to track active call session", error);
+            }
+          } else if (payload.reason === "declined") {
+            const callerId = pendingInvite?.callerId || payload.recipientId;
+            const recipientId = pendingInvite?.recipientId || socket.userId;
+
+            try {
+              await createMissedCallMessage({ callId: payload.callId, callerId, recipientId });
+            } catch (error) {
+              console.error("Failed to save declined call message", error);
             }
           }
 
@@ -444,6 +489,16 @@ wss.on("connection", (socket) => {
           break;
         }
 
+        case "call_connected": {
+          if (!socket.userId || !payload.callId) return;
+
+          const activeCall = activeCallSessions.get(payload.callId);
+          if (activeCall && !activeCall.startedAt) {
+            activeCall.startedAt = Date.now();
+          }
+          break;
+        }
+
         case "leave_call": {
           if (!payload.callId) return;
           const pendingInvite = pendingCallInvites.get(payload.callId);
@@ -465,6 +520,12 @@ wss.on("connection", (socket) => {
               callerId: pendingInvite.callerId,
               recipientId: pendingInvite.recipientId,
             });
+          }
+
+          try {
+            await endActiveCallSession(payload.callId);
+          } catch (error) {
+            console.error("Failed to save ended call message", error);
           }
 
           removeFromSetMap(callRooms, payload.callId, socket);
@@ -499,6 +560,9 @@ wss.on("connection", (socket) => {
     }
 
     for (const callId of socket.subscriptions.calls) {
+      endActiveCallSession(callId).catch((error) => {
+        console.error("Failed to save ended call message after socket close", error);
+      });
       removeFromSetMap(callRooms, callId, socket);
       broadcastToCallRoom(callId, socket, {
         type: "peer_left",

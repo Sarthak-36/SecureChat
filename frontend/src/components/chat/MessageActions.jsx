@@ -156,7 +156,7 @@ const MessageActions = ({
   return (
     <div
       ref={containerRef}
-      className={`message-actions shrink-0 pt-1 ${open ? "message-actions-open" : ""}`}
+      className={`message-actions shrink-0 ${open ? "message-actions-open" : ""}`}
     >
       <button
         ref={refs.setReference}

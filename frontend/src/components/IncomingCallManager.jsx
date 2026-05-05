@@ -103,8 +103,17 @@ const IncomingCallManager = () => {
       })
     );
     const acceptedCall = incomingCall;
+    const returnTo = `${location.pathname}${location.search}`;
+    const callParams = new URLSearchParams({
+      mode: "incoming",
+      peer: acceptedCall.fromUserId,
+      peerName: acceptedCall.fromUserName || "Friend",
+      peerPic: acceptedCall.fromUserProfilePic || "/default-avatar.svg",
+      returnTo,
+    });
+
     setIncomingCall(null);
-    navigate(`/call/${acceptedCall.callId}?mode=incoming&peer=${acceptedCall.fromUserId}`);
+    navigate(`/call/${acceptedCall.callId}?${callParams.toString()}`);
   };
 
   const handleDecline = () => {

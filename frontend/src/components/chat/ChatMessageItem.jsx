@@ -6,6 +6,7 @@ import {
   LoaderCircleIcon,
   RotateCwIcon,
   SparklesIcon,
+  VideoIcon,
 } from "lucide-react";
 import toast from "react-hot-toast";
 
@@ -44,7 +45,8 @@ const ChatMessageItem = ({
   const attachment = attachments[0];
   const shouldHighlight = searchTerm && message.text?.toLowerCase().includes(searchTerm);
   const isRead = isOwnMessage && readAt && new Date(message.createdAt).getTime() <= new Date(readAt).getTime();
-  const isSystemMessage = message.messageType === "system" || Boolean(message.metadata?.callEvent);
+  const callEvent = message.metadata?.callEvent;
+  const isSystemMessage = message.messageType === "system" || Boolean(callEvent);
   const translationStatusLabel =
     {
       reused: "Saved",
@@ -105,6 +107,53 @@ const ChatMessageItem = ({
     }
   };
 
+  if (callEvent) {
+    const isMissedCall = callEvent.status === "missed";
+    const durationLabel = callEvent.durationLabel;
+    const isCallFromCurrentUser = message.senderId === authUserId;
+    const callTitle = `${isCallFromCurrentUser ? "Outgoing" : "Incoming"} video call`;
+
+    return (
+      <div className={`flex items-start gap-1.5 ${isCallFromCurrentUser ? "justify-end" : "justify-start"}`}>
+        {!isCallFromCurrentUser ? <div className="w-6 shrink-0" aria-hidden="true" /> : null}
+        <div
+          ref={(node) => registerMessageNode(message._id, node)}
+          data-message-id={message._id}
+          className={`max-w-[80%] rounded-2xl border px-3 py-2 text-sm shadow-sm sm:max-w-[74%] ${
+            isMissedCall
+              ? "border-warning/20 bg-warning/10"
+              : "border-success/20 bg-success/10"
+          } ${isActiveSearchMatch ? "ring-2 ring-warning ring-offset-2 ring-offset-base-100" : ""} ${
+            isHighlighted ? "ring-2 ring-info ring-offset-2 ring-offset-base-100" : ""
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <span
+              className={`grid size-9 shrink-0 place-items-center rounded-full ${
+                isMissedCall ? "bg-warning/15 text-warning" : "bg-success/15 text-success"
+              }`}
+            >
+              <VideoIcon className="size-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate font-semibold">{callTitle}</p>
+              <p className={`text-xs ${isMissedCall ? "text-warning" : "opacity-70"}`}>
+                {isMissedCall ? "Missed" : durationLabel ? `Duration ${durationLabel}` : "Completed"}
+              </p>
+            </div>
+          </div>
+          <div className="mt-1.5 text-right text-[11px] opacity-60">
+            {new Date(message.createdAt).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </div>
+        </div>
+        {isCallFromCurrentUser ? <div className="w-6 shrink-0" aria-hidden="true" /> : null}
+      </div>
+    );
+  }
+
   if (isSystemMessage) {
     return (
       <div className="flex justify-center">
@@ -124,7 +173,7 @@ const ChatMessageItem = ({
   }
 
   return (
-    <div className={`group flex items-start gap-2 ${isOwnMessage ? "justify-end" : "justify-start"}`}>
+    <div className={`group flex items-start gap-1.5 ${isOwnMessage ? "justify-end" : "justify-start"}`}>
       {!isOwnMessage ? (
         <MessageActions
           canDeleteForEveryone={false}

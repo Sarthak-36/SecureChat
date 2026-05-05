@@ -10,6 +10,22 @@ import {
 
 import ReplyPreview from "./ReplyPreview";
 
+const formatAttachmentSize = (size) => {
+  if (!Number.isFinite(size) || size <= 0) return null;
+
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(size < 10 * 1024 ? 1 : 0)} KB`;
+
+  return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+};
+
+const getAttachmentLabel = (attachment) => {
+  if (attachment.type === "image") return "Image";
+  if (attachment.type === "video") return "Video";
+  if (attachment.type === "audio") return "Audio";
+  return attachment.mimeType || "File";
+};
+
 const MessageComposer = ({
   authUserId,
   fileInputRef,
@@ -20,6 +36,7 @@ const MessageComposer = ({
   onChangeMessageText,
   onClearReply,
   onClearPendingAttachments,
+  onPasteMessageInput,
   onRemovePendingAttachment,
   onKeyDownMessageInput,
   onOpenFilePicker,
@@ -28,7 +45,7 @@ const MessageComposer = ({
   replyingTo,
   socketReady,
 }) => {
-  const canSend = socketReady && (messageText.trim() || pendingAttachments.length > 0);
+  const canSend = socketReady && !isUploadingAttachment && (messageText.trim() || pendingAttachments.length > 0);
 
   return (
   <form onSubmit={onSubmit} className="border-t border-base-300 bg-base-100/95 px-3 py-3 backdrop-blur sm:px-4">
@@ -51,30 +68,45 @@ const MessageComposer = ({
               Clear all
             </button>
           </div>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {pendingAttachments.map((attachment, index) => (
-              <div
-                key={`${attachment.url}-${index}`}
-                className="flex min-w-0 items-center gap-3 rounded-lg bg-base-100 px-3 py-2"
-              >
-                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-base-200 text-primary">
-                  <FileIcon className="size-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{attachment.name}</p>
-                  <p className="truncate text-xs opacity-65">{attachment.mimeType || "Attachment"}</p>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-circle btn-xs"
-                  onClick={() => onRemovePendingAttachment(index)}
-                  title="Remove attachment"
-                  aria-label="Remove attachment"
+          <div className="grid max-h-44 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
+            {pendingAttachments.map((attachment, index) => {
+              const attachmentSize = formatAttachmentSize(attachment.size);
+              const attachmentMeta = [getAttachmentLabel(attachment), attachmentSize].filter(Boolean).join(" · ");
+              const isImage = attachment.type === "image";
+              const previewUrl = attachment.previewUrl || attachment.url;
+
+              return (
+                <div
+                  key={attachment.id || `${previewUrl}-${index}`}
+                  className="group/attachment flex min-w-0 items-center gap-3 rounded-xl border border-base-content/10 bg-base-100 p-2 shadow-sm"
                 >
-                  <XIcon className="size-3.5" />
-                </button>
-              </div>
-            ))}
+                  <span className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-lg bg-base-200 text-primary">
+                    {isImage && previewUrl ? (
+                      <img
+                        src={previewUrl}
+                        alt={attachment.name || "Selected image"}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <FileIcon className="size-5" />
+                    )}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold">{attachment.name}</p>
+                    <p className="truncate text-xs opacity-65">{attachmentMeta || "Attachment"}</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-circle btn-xs shrink-0 text-base-content/60 hover:bg-error/10 hover:text-error"
+                    onClick={() => onRemovePendingAttachment(index)}
+                    title="Remove attachment"
+                    aria-label="Remove attachment"
+                  >
+                    <XIcon className="size-3.5" />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
       ) : null}
@@ -87,8 +119,8 @@ const MessageComposer = ({
           className="btn btn-ghost btn-circle shrink-0"
           onClick={onOpenFilePicker}
           disabled={isUploadingAttachment}
-          title={isUploadingAttachment ? "Uploading attachment" : "Attach file"}
-          aria-label={isUploadingAttachment ? "Uploading attachment" : "Attach file"}
+          title={isUploadingAttachment ? "Uploading attachments" : "Attach file"}
+          aria-label={isUploadingAttachment ? "Uploading attachments" : "Attach file"}
         >
           {isUploadingAttachment ? (
             <LoaderCircleIcon className="size-5 animate-spin" />
@@ -103,6 +135,7 @@ const MessageComposer = ({
             value={messageText}
             onChange={onChangeMessageText}
             onKeyDown={onKeyDownMessageInput}
+            onPaste={onPasteMessageInput}
             placeholder={socketReady ? "Type a message..." : "Reconnecting..."}
             rows={1}
             className="textarea min-h-11 w-full resize-none border-0 bg-transparent px-2 py-2 leading-6 focus:outline-none"
@@ -126,11 +159,13 @@ const MessageComposer = ({
             {socketReady ? "Connected" : "Reconnecting"}
           </span>
           <span>
-            {pendingAttachments.length > 1
-              ? "Files send separately"
-              : messageText.length
-                ? `${messageText.length} chars`
-                : "Enter to send"}
+            {isUploadingAttachment
+              ? "Uploading..."
+              : pendingAttachments.length > 1
+                ? "Files send separately"
+                : messageText.length
+                  ? `${messageText.length} chars`
+                  : "Enter to send"}
           </span>
         </div>
       </div>

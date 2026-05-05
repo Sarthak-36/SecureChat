@@ -13,6 +13,7 @@ const ChatHeader = ({
   isSearchExpanded,
   matchingMessageCount,
   messageSearch,
+  searchInputRef,
   normalizedMessageSearch,
   onChangeSearch,
   onClearConversation,
@@ -90,6 +91,7 @@ const ChatHeader = ({
           <label className="input input-bordered input-sm flex min-w-0 items-center gap-2">
             <SearchIcon className="size-4 shrink-0 opacity-70" />
             <input
+              ref={searchInputRef}
               type="text"
               value={messageSearch}
               onChange={onChangeSearch}
@@ -136,7 +138,7 @@ const ChatHeader = ({
         <span>
           {matchingMessageCount === 0
             ? "0 messages found"
-            : `${activeSearchMatchIndex + 1} of ${matchingMessageCount} matches`}
+            : `${activeSearchMatchIndex + 1} of ${matchingMessageCount} matches from bottom`}
         </span>
         {matchingMessageCount === 0 ? <span>No matches for this search</span> : null}
       </div>

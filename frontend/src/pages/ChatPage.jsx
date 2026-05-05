@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowDownIcon, ImagePlusIcon, MessageSquareTextIcon, VideoIcon } from "lucide-react";
 import toast from "react-hot-toast";
 import { v4 as uuidv4 } from "uuid";
 
 import AIDetectionModal from "../components/AIDetectionModal";
+import AvatarImage from "../components/AvatarImage";
 import ChatLoader from "../components/ChatLoader";
 import ChatHeader from "../components/chat/ChatHeader";
 import ChatMessageItem from "../components/chat/ChatMessageItem";
@@ -60,22 +62,150 @@ const getLatestReadAt = (messageHistory) => {
   return latestReadAt;
 };
 
+const getAttachmentTypeFromFile = (file) => {
+  const mimeType = file.type || "application/octet-stream";
+
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("video/")) return "video";
+  if (mimeType.startsWith("audio/")) return "audio";
+
+  return "file";
+};
+
+const createPendingAttachment = (file) => {
+  const type = getAttachmentTypeFromFile(file);
+
+  return {
+    id: uuidv4(),
+    file,
+    name: file.name || "Pasted attachment",
+    mimeType: file.type || "application/octet-stream",
+    previewUrl: type === "image" ? URL.createObjectURL(file) : null,
+    size: file.size,
+    type,
+  };
+};
+
+const revokePendingAttachmentPreview = (attachment) => {
+  if (attachment?.previewUrl) {
+    URL.revokeObjectURL(attachment.previewUrl);
+  }
+};
+
+const getMessageDateKey = (timestamp) => {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "unknown";
+
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+};
+
+const getMessageDateLabel = (timestamp) => {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "Unknown date";
+
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+
+  if (getMessageDateKey(timestamp) === getMessageDateKey(today)) return "Today";
+  if (getMessageDateKey(timestamp) === getMessageDateKey(yesterday)) return "Yesterday";
+
+  return date.toLocaleDateString([], {
+    day: "numeric",
+    month: "short",
+    year: date.getFullYear() === today.getFullYear() ? undefined : "numeric",
+  });
+};
+
+const ChatDateSeparator = ({ timestamp }) => (
+  <div className="flex items-center justify-center py-3">
+    <div className="flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-base-content/50">
+      <span className="h-px w-10 bg-base-content/10 sm:w-16" />
+      <span className="rounded-full border border-base-content/10 bg-base-100/90 px-3 py-1 shadow-sm backdrop-blur">
+        {getMessageDateLabel(timestamp)}
+      </span>
+      <span className="h-px w-10 bg-base-content/10 sm:w-16" />
+    </div>
+  </div>
+);
+
+const NewMessagesSeparator = () => (
+  <div className="flex items-center justify-center py-3">
+    <div className="flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-primary">
+      <span className="h-px w-12 bg-primary/30 sm:w-20" />
+      <span className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1 shadow-sm backdrop-blur">
+        New messages
+      </span>
+      <span className="h-px w-12 bg-primary/30 sm:w-20" />
+    </div>
+  </div>
+);
+
+const ChatEmptyState = ({ isOnline, onAttachFile, onSayHi, onStartCall, targetUser }) => (
+  <div className="flex min-h-[calc(100vh-18rem)] items-center justify-center px-2 py-10">
+    <div className="flex w-full max-w-lg flex-col items-center text-center">
+      <div className="avatar">
+        <div className="w-20 rounded-full ring ring-base-300 ring-offset-4 ring-offset-base-100 sm:w-24">
+          <AvatarImage
+            src={targetUser?.profilePic}
+            name={targetUser?.fullName}
+            alt={targetUser?.fullName || "Friend"}
+            className="h-full w-full object-cover"
+          />
+        </div>
+      </div>
+
+      <div className="mt-5 space-y-2">
+        <div className="flex items-center justify-center gap-2">
+          <h2 className="text-xl font-semibold sm:text-2xl">
+            {targetUser?.fullName || "This conversation"}
+          </h2>
+          <span className={`size-2.5 rounded-full ${isOnline ? "bg-success" : "bg-base-content/30"}`} />
+        </div>
+        <p className="mx-auto max-w-sm text-sm leading-6 opacity-70 sm:text-base">
+          Start a secure conversation with {targetUser?.fullName || "your friend"}.
+        </p>
+      </div>
+
+      <div className="mt-6 flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+        <button type="button" className="btn btn-primary sm:min-w-28" onClick={onSayHi}>
+          <MessageSquareTextIcon className="size-4" />
+          Say hi
+        </button>
+        <button type="button" className="btn btn-outline sm:min-w-28" onClick={onAttachFile}>
+          <ImagePlusIcon className="size-4" />
+          Attach
+        </button>
+        <button type="button" className="btn btn-ghost sm:min-w-28" onClick={onStartCall}>
+          <VideoIcon className="size-4" />
+          Call
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
 const ChatPage = () => {
   const { id: targetUserId } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const messagesEndRef = useRef(null);
+  const chatScrollRef = useRef(null);
   const messageNodesRef = useRef({});
+  const pendingAttachmentsRef = useRef([]);
   const socketRef = useRef(null);
   const fileInputRef = useRef(null);
   const messageInputRef = useRef(null);
+  const searchInputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const isTypingRef = useRef(false);
+  const isAwayFromBottomRef = useRef(false);
 
   const [messages, setMessages] = useState([]);
   const [messageText, setMessageText] = useState("");
   const [socketReady, setSocketReady] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState([]);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const [aiDetectionResult, setAiDetectionResult] = useState(null);
   const [detectingMessageId, setDetectingMessageId] = useState(null);
@@ -93,6 +223,9 @@ const ChatPage = () => {
   const [translatedMessages, setTranslatedMessages] = useState({});
   const [translatingMessageId, setTranslatingMessageId] = useState(null);
   const [aiMessageStatuses, setAiMessageStatuses] = useState({});
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [newIncomingMessageCount, setNewIncomingMessageCount] = useState(0);
+  const [firstNewMessageId, setFirstNewMessageId] = useState(null);
   const [activeSearchMatchIndex, setActiveSearchMatchIndex] = useState(0);
 
   const { authUser } = useAuthUser();
@@ -128,7 +261,8 @@ const ChatPage = () => {
 
     return messages
       .filter((message) => message.text?.toLowerCase().includes(normalizedMessageSearch))
-      .map((message) => message._id);
+      .map((message) => message._id)
+      .reverse();
   }, [messages, normalizedMessageSearch]);
 
   const matchingMessageCount = matchingMessageIds.length;
@@ -218,6 +352,16 @@ const ChatPage = () => {
   }, [history]);
 
   useEffect(() => {
+    pendingAttachmentsRef.current = pendingAttachments;
+  }, [pendingAttachments]);
+
+  useEffect(() => {
+    return () => {
+      pendingAttachmentsRef.current.forEach(revokePendingAttachmentPreview);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!tokenData?.token || !conversationId || !authUser?._id) return;
 
     let isCleaningUp = false;
@@ -268,6 +412,10 @@ const ChatPage = () => {
 
         if (payload.message.senderId === targetUserId) {
           setTypingUserId(null);
+          if (isAwayFromBottomRef.current) {
+            setFirstNewMessageId((currentMessageId) => currentMessageId || payload.message._id);
+            setNewIncomingMessageCount((currentCount) => currentCount + 1);
+          }
           if (document.visibilityState === "visible") {
             markConversationRead();
           }
@@ -348,8 +496,39 @@ const ChatPage = () => {
   }, [authUser?._id, conversationId, queryClient, targetUserId, tokenData?.token]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, typingUserId]);
+    const latestMessage = messages[messages.length - 1];
+    const shouldAutoScroll =
+      !isAwayFromBottomRef.current || latestMessage?.senderId === authUser?._id;
+
+    if (shouldAutoScroll) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      if (latestMessage?.senderId === authUser?._id) {
+        setNewIncomingMessageCount(0);
+        setFirstNewMessageId(null);
+      }
+    }
+  }, [authUser?._id, messages, typingUserId]);
+
+  const updateScrollToBottomVisibility = () => {
+    const scrollElement = chatScrollRef.current;
+    if (!scrollElement) return;
+
+    const distanceFromBottom =
+      scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight;
+    const isAwayFromBottom = distanceFromBottom > 180;
+
+    isAwayFromBottomRef.current = isAwayFromBottom;
+    setShowScrollToBottom(isAwayFromBottom);
+
+    if (!isAwayFromBottom) {
+      setNewIncomingMessageCount(0);
+      setFirstNewMessageId(null);
+    }
+  };
+
+  useEffect(() => {
+    window.requestAnimationFrame(updateScrollToBottomVisibility);
+  }, [messages.length, typingUserId]);
 
   useEffect(() => {
     const canAutoFocusComposer =
@@ -371,6 +550,86 @@ const ChatPage = () => {
     setMessageSearch("");
     setActiveSearchMatchIndex(0);
   }, [isSearchExpanded]);
+
+  useEffect(() => {
+    if (!isSearchExpanded) return;
+
+    const focusTimer = window.setTimeout(() => {
+      searchInputRef.current?.focus({ preventScroll: true });
+      searchInputRef.current?.select();
+    }, 80);
+
+    return () => {
+      window.clearTimeout(focusTimer);
+    };
+  }, [isSearchExpanded]);
+
+  useEffect(() => {
+    const isEditableElement = (element) => {
+      if (!element) return false;
+      const tagName = element.tagName?.toLowerCase();
+      return (
+        element.isContentEditable ||
+        tagName === "input" ||
+        tagName === "textarea" ||
+        tagName === "select"
+      );
+    };
+
+    const focusComposerOnWideScreen = () => {
+      if (typeof window === "undefined" || !window.matchMedia("(min-width: 768px)").matches) {
+        return;
+      }
+
+      window.requestAnimationFrame(() => {
+        messageInputRef.current?.focus({ preventScroll: true });
+      });
+    };
+
+    const handleChatShortcut = (event) => {
+      const key = event.key.toLowerCase();
+      const isEditableTarget = isEditableElement(event.target);
+
+      if ((event.ctrlKey || event.metaKey) && key === "k") {
+        event.preventDefault();
+        setIsSearchExpanded(true);
+        return;
+      }
+
+      if (
+        key === "/" &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !isEditableTarget
+      ) {
+        event.preventDefault();
+        setIsSearchExpanded(true);
+        return;
+      }
+
+      if (event.key === "Escape") {
+        if (isSearchExpanded) {
+          event.preventDefault();
+          setIsSearchExpanded(false);
+          focusComposerOnWideScreen();
+          return;
+        }
+
+        if (replyingTo) {
+          event.preventDefault();
+          setReplyingTo(null);
+          focusComposerOnWideScreen();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleChatShortcut);
+
+    return () => {
+      window.removeEventListener("keydown", handleChatShortcut);
+    };
+  }, [isSearchExpanded, replyingTo]);
 
   useEffect(() => {
     setActiveSearchMatchIndex(0);
@@ -476,47 +735,86 @@ useEffect(() => {
     scheduleTypingStop();
   };
 
+  const addPendingFiles = (files) => {
+    if (!files.length) return;
+
+    const nextAttachments = files.map(createPendingAttachment);
+    setPendingAttachments((currentAttachments) => [...currentAttachments, ...nextAttachments]);
+
+    toast.success(
+      nextAttachments.length === 1
+        ? "Attachment ready"
+        : `${nextAttachments.length} attachments ready`
+    );
+    window.requestAnimationFrame(() => {
+      messageInputRef.current?.focus();
+    });
+  };
+
   const handleAttachmentSelect = async (event) => {
     const selectedFiles = Array.from(event.target.files || []);
     if (!selectedFiles.length) return;
 
-    setIsUploadingAttachment(true);
-
     try {
-      const uploadedAttachments = [];
-
-      for (const selectedFile of selectedFiles) {
-        const response = await uploadChatAttachment(selectedFile);
-        uploadedAttachments.push(response.attachment);
-      }
-
-      setPendingAttachments((currentAttachments) => [
-        ...currentAttachments,
-        ...uploadedAttachments,
-      ]);
-      toast.success(
-        uploadedAttachments.length === 1
-          ? "Attachment uploaded"
-          : `${uploadedAttachments.length} attachments uploaded`
-      );
-      window.requestAnimationFrame(() => {
-        messageInputRef.current?.focus();
-      });
-    } catch (error) {
-      toast.error(error?.response?.data?.message || "Could not upload attachment");
+      addPendingFiles(selectedFiles);
     } finally {
-      setIsUploadingAttachment(false);
       event.target.value = "";
     }
   };
 
+  const handleComposerPaste = async (event) => {
+    const pastedFiles = Array.from(event.clipboardData?.files || []);
+    if (!pastedFiles.length) return;
+
+    event.preventDefault();
+    addPendingFiles(pastedFiles);
+  };
+
+  const hasDraggedFiles = (event) => {
+    return Array.from(event.dataTransfer?.types || []).includes("Files");
+  };
+
+  const handleChatDragEnter = (event) => {
+    if (!hasDraggedFiles(event)) return;
+
+    event.preventDefault();
+    setIsDraggingFiles(true);
+  };
+
+  const handleChatDragOver = (event) => {
+    if (!hasDraggedFiles(event)) return;
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsDraggingFiles(true);
+  };
+
+  const handleChatDragLeave = (event) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) {
+      setIsDraggingFiles(false);
+    }
+  };
+
+  const handleChatDrop = async (event) => {
+    if (!hasDraggedFiles(event)) return;
+
+    event.preventDefault();
+    setIsDraggingFiles(false);
+
+    const droppedFiles = Array.from(event.dataTransfer?.files || []);
+    addPendingFiles(droppedFiles);
+  };
+
   const handleRemovePendingAttachment = (attachmentIndex) => {
-    setPendingAttachments((currentAttachments) =>
-      currentAttachments.filter((_, index) => index !== attachmentIndex)
-    );
+    setPendingAttachments((currentAttachments) => {
+      const attachmentToRemove = currentAttachments[attachmentIndex];
+      revokePendingAttachmentPreview(attachmentToRemove);
+      return currentAttachments.filter((_, index) => index !== attachmentIndex);
+    });
   };
 
   const handleClearPendingAttachments = () => {
+    pendingAttachments.forEach(revokePendingAttachmentPreview);
     setPendingAttachments([]);
   };
 
@@ -527,15 +825,15 @@ useEffect(() => {
   const handleJumpToNextSearchMatch = () => {
     if (!matchingMessageCount) return;
 
-    setActiveSearchMatchIndex((currentIndex) => (currentIndex + 1) % matchingMessageCount);
+    setActiveSearchMatchIndex((currentIndex) =>
+      currentIndex === 0 ? matchingMessageCount - 1 : currentIndex - 1
+    );
   };
 
   const handleJumpToPreviousSearchMatch = () => {
     if (!matchingMessageCount) return;
 
-    setActiveSearchMatchIndex((currentIndex) =>
-      currentIndex === 0 ? matchingMessageCount - 1 : currentIndex - 1
-    );
+    setActiveSearchMatchIndex((currentIndex) => (currentIndex + 1) % matchingMessageCount);
   };
 
   const handleComposerKeyDown = (event) => {
@@ -585,13 +883,64 @@ useEffect(() => {
     });
   };
 
-  const handleSendMessage = (event) => {
+  const scrollToLatestMessage = () => {
+    setNewIncomingMessageCount(0);
+    setFirstNewMessageId(null);
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const scrollToFirstNewMessage = () => {
+    if (!firstNewMessageId) {
+      scrollToLatestMessage();
+      return;
+    }
+
+    const targetNode = messageNodesRef.current[firstNewMessageId];
+    if (!targetNode) {
+      scrollToLatestMessage();
+      return;
+    }
+
+    targetNode.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const handlePrefillGreeting = () => {
+    setMessageText((currentText) => currentText || `Hi ${targetUser?.fullName || "there"}!`);
+    window.requestAnimationFrame(() => {
+      messageInputRef.current?.focus({ preventScroll: true });
+    });
+  };
+
+  const handleSendMessage = async (event) => {
     event.preventDefault();
 
-    if (!socketReady || !socketRef.current) return;
+    if (!socketReady || !socketRef.current || isUploadingAttachment) return;
 
     const trimmedText = messageText.trim();
     if (!trimmedText && pendingAttachments.length === 0) return;
+
+    let uploadedAttachments = [];
+
+    if (pendingAttachments.length > 0) {
+      setIsUploadingAttachment(true);
+
+      try {
+        for (const pendingAttachment of pendingAttachments) {
+          if (!pendingAttachment.file) {
+            uploadedAttachments.push(pendingAttachment);
+            continue;
+          }
+
+          const response = await uploadChatAttachment(pendingAttachment.file);
+          uploadedAttachments.push(response.attachment);
+        }
+      } catch (error) {
+        toast.error(error?.response?.data?.message || "Could not upload attachment");
+        return;
+      } finally {
+        setIsUploadingAttachment(false);
+      }
+    }
 
     const sendChatPayload = ({ text = "", attachment = null, includeReply = false }) => {
       const metadata = {};
@@ -616,16 +965,17 @@ useEffect(() => {
 
     if (trimmedText) {
       sendChatPayload({ text: trimmedText, includeReply: true });
-      pendingAttachments.forEach((attachment) => {
+      uploadedAttachments.forEach((attachment) => {
         sendChatPayload({ attachment });
       });
     } else {
-      pendingAttachments.forEach((attachment, index) => {
+      uploadedAttachments.forEach((attachment, index) => {
         sendChatPayload({ attachment, includeReply: index === 0 });
       });
     }
 
     setMessageText("");
+    pendingAttachments.forEach(revokePendingAttachmentPreview);
     setPendingAttachments([]);
     setReplyingTo(null);
     stopTyping();
@@ -633,24 +983,32 @@ useEffect(() => {
   };
 
   const handleVideoCall = () => {
-  if (!socketReady || !socketRef.current) {
-    toast.error("Chat connection is still loading");
-    return;
-  }
+    if (!socketReady || !socketRef.current) {
+      toast.error("Chat connection is still loading");
+      return;
+    }
 
-  const callId = uuidv4();
+    const callId = uuidv4();
 
-  socketRef.current.send(
-    JSON.stringify({
-      type: "call_invite",
-      callId,
-      recipientId: targetUserId,
-    })
-  );
+    socketRef.current.send(
+      JSON.stringify({
+        type: "call_invite",
+        callId,
+        recipientId: targetUserId,
+      })
+    );
 
-  toast.success(`Calling ${targetUser?.fullName || "your friend"}...`);
-  navigate(`/call/${callId}?mode=outgoing&peer=${targetUserId}`);
-};
+    const callParams = new URLSearchParams({
+      mode: "outgoing",
+      peer: targetUserId,
+      peerName: targetUser?.fullName || "Friend",
+      peerPic: targetUser?.profilePic || "/default-avatar.svg",
+      returnTo: `/chat/${targetUserId}`,
+    });
+
+    toast.success(`Calling ${targetUser?.fullName || "your friend"}...`);
+    navigate(`/call/${callId}?${callParams.toString()}`);
+  };
 
   const setAiMessageStatus = (messageId, status) => {
     setAiMessageStatuses((currentStatuses) => ({
@@ -1004,7 +1362,13 @@ useEffect(() => {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-base-100">
+    <div
+      className="relative flex h-full min-h-0 flex-col bg-base-100"
+      onDragEnter={handleChatDragEnter}
+      onDragLeave={handleChatDragLeave}
+      onDragOver={handleChatDragOver}
+      onDrop={handleChatDrop}
+    >
       <AIDetectionModal
         result={aiDetectionResult}
         isRechecking={isRecheckingDetection}
@@ -1021,6 +1385,7 @@ useEffect(() => {
         activeSearchMatchIndex={activeSearchMatchIndex}
         matchingMessageCount={matchingMessageCount}
         messageSearch={messageSearch}
+        searchInputRef={searchInputRef}
         normalizedMessageSearch={normalizedMessageSearch}
         onChangeSearch={handleSearchChange}
         onClearConversation={handleClearConversation}
@@ -1033,40 +1398,91 @@ useEffect(() => {
         targetUser={targetUser}
       />
 
-      <div className="chat-thread-surface min-h-0 flex-1 overflow-y-auto px-4 py-5">
-        <div className="mx-auto max-w-4xl space-y-3">
-          {messages.map((message) => (
-            <ChatMessageItem
-              key={message._id}
-              authUserId={authUser._id}
-              checkingLinkMessageId={checkingLinkMessageId}
-              describingImageMessageId={describingImageMessageId}
-              detectingMessageId={detectingMessageId}
-              isActiveSearchMatch={activeSearchMessageId === message._id}
-              isHighlighted={highlightedMessageId === message._id}
-              isRunningSummarize={summarizingMessageId === message._id}
-              isRunningTranslation={translatingMessageId === message._id}
-              aiStatus={aiMessageStatuses[message._id]}
-              message={message}
-              onDeleteForEveryone={deleteMessageMutation}
-              onDeleteForMe={hideMessageMutation}
-              onDescribeImage={handleDescribeImageMessage}
-              onJumpToReply={handleJumpToMessage}
-              onReply={handleReplyToMessage}
-              onRunDetection={runDetectionForMessage}
-              onRunLinkCheck={runLinkCheckForMessage}
-              onRetryTranslation={handleRetryTranslation}
-              onSummarize={handleSummarizeMessage}
-              onTranslate={handleTranslateMessage}
-              readAt={targetUserReadAt}
-              registerMessageNode={registerMessageNode}
-              searchTerm={normalizedMessageSearch}
-              translationResult={translatedMessages[message._id]}
+      <div
+        ref={chatScrollRef}
+        className="chat-thread-surface relative min-h-0 flex-1 overflow-y-auto px-4 py-5"
+        onScroll={updateScrollToBottomVisibility}
+      >
+        <div className="mx-auto max-w-4xl space-y-1.5">
+          {messages.length === 0 ? (
+            <ChatEmptyState
+              isOnline={isTargetUserOnline}
+              onAttachFile={() => fileInputRef.current?.click()}
+              onSayHi={handlePrefillGreeting}
+              onStartCall={handleVideoCall}
+              targetUser={targetUser}
             />
-          ))}
+          ) : (
+            messages.map((message, index) => {
+              const previousMessage = messages[index - 1];
+              const shouldShowDateSeparator =
+                !previousMessage ||
+                getMessageDateKey(previousMessage.createdAt) !== getMessageDateKey(message.createdAt);
+              const shouldShowNewMessagesSeparator = firstNewMessageId === message._id;
+
+              return (
+                <div key={message._id} className="space-y-1.5">
+                  {shouldShowDateSeparator ? <ChatDateSeparator timestamp={message.createdAt} /> : null}
+                  {shouldShowNewMessagesSeparator ? <NewMessagesSeparator /> : null}
+                  <ChatMessageItem
+                    authUserId={authUser._id}
+                    checkingLinkMessageId={checkingLinkMessageId}
+                    describingImageMessageId={describingImageMessageId}
+                    detectingMessageId={detectingMessageId}
+                    isActiveSearchMatch={activeSearchMessageId === message._id}
+                    isHighlighted={highlightedMessageId === message._id}
+                    isRunningSummarize={summarizingMessageId === message._id}
+                    isRunningTranslation={translatingMessageId === message._id}
+                    aiStatus={aiMessageStatuses[message._id]}
+                    message={message}
+                    onDeleteForEveryone={deleteMessageMutation}
+                    onDeleteForMe={hideMessageMutation}
+                    onDescribeImage={handleDescribeImageMessage}
+                    onJumpToReply={handleJumpToMessage}
+                    onReply={handleReplyToMessage}
+                    onRunDetection={runDetectionForMessage}
+                    onRunLinkCheck={runLinkCheckForMessage}
+                    onRetryTranslation={handleRetryTranslation}
+                    onSummarize={handleSummarizeMessage}
+                    onTranslate={handleTranslateMessage}
+                    readAt={targetUserReadAt}
+                    registerMessageNode={registerMessageNode}
+                    searchTerm={normalizedMessageSearch}
+                    translationResult={translatedMessages[message._id]}
+                  />
+                </div>
+              );
+            })
+          )}
           {typingUserId === targetUserId ? <TypingIndicator name={targetUser?.fullName} /> : null}
           <div ref={messagesEndRef} />
         </div>
+        {showScrollToBottom || newIncomingMessageCount > 0 ? (
+          <div className="sticky bottom-3 z-20 mt-3 flex justify-end">
+            <div className="flex flex-col items-end gap-2">
+              {newIncomingMessageCount > 0 ? (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm rounded-full shadow-lg"
+                  onClick={scrollToFirstNewMessage}
+                >
+                  {newIncomingMessageCount} new message{newIncomingMessageCount === 1 ? "" : "s"}
+                </button>
+              ) : null}
+              {showScrollToBottom ? (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-circle btn-sm shadow-lg"
+                  onClick={scrollToLatestMessage}
+                  aria-label="Jump to latest message"
+                  title="Jump to latest message"
+                >
+                  <ArrowDownIcon className="size-4" />
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <MessageComposer
@@ -1081,12 +1497,22 @@ useEffect(() => {
         onRemovePendingAttachment={handleRemovePendingAttachment}
         onClearReply={() => setReplyingTo(null)}
         onKeyDownMessageInput={handleComposerKeyDown}
+        onPasteMessageInput={handleComposerPaste}
         onOpenFilePicker={() => fileInputRef.current?.click()}
         onSubmit={handleSendMessage}
         pendingAttachments={pendingAttachments}
         replyingTo={replyingTo}
         socketReady={socketReady}
       />
+      {isDraggingFiles ? (
+        <div className="pointer-events-none absolute inset-0 z-50 grid place-items-center bg-base-100/55 p-6 backdrop-blur-sm">
+          <div className="rounded-2xl border border-dashed border-primary/50 bg-base-100/95 px-6 py-5 text-center shadow-2xl">
+            <ImagePlusIcon className="mx-auto mb-3 size-8 text-primary" />
+            <p className="font-semibold">Drop files to attach</p>
+            <p className="mt-1 text-sm opacity-70">They’ll appear in the composer preview.</p>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };
