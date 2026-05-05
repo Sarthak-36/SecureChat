@@ -19,7 +19,10 @@ const DEFAULT_TEXT_AI_MODEL =
     "Hello-SimpleAI/chatgpt-detector-roberta";
 const DEFAULT_TRANSLATION_MODEL =
     process.env.HF_TRANSLATION_MODEL || "facebook/mbart-large-50-many-to-one-mmt";
-const FALLBACK_TRANSLATION_MODEL = "facebook/mbart-large-50-many-to-many-mmt";
+const FALLBACK_TRANSLATION_MODEL =
+    process.env.HF_TRANSLATION_FALLBACK_MODEL || "facebook/mbart-large-50-many-to-many-mmt";
+const NLLB_TRANSLATION_FALLBACK_MODEL =
+    process.env.HF_NLLB_TRANSLATION_FALLBACK_MODEL || "facebook/nllb-200-distilled-600M";
 const DEFAULT_SUMMARIZATION_MODEL = process.env.HF_SUMMARIZATION_MODEL || "sshleifer/distilbart-cnn-12-6";
 const FALLBACK_SUMMARIZATION_MODEL =
     process.env.HF_SUMMARIZATION_FALLBACK_MODEL || "facebook/bart-large-cnn";
@@ -901,6 +904,13 @@ const normalizeComparableText = (text = "") =>
         .replace(/[^\p{L}\p{N}]+/gu, " ")
         .trim();
 
+const escapeRegExp = (text = "") => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const getNormalizedLatinTokens = (text = "") =>
+    stripDiacritics(text.toLowerCase())
+        .split(/[^a-z]+/)
+        .filter(Boolean);
+
 const isSuspiciousSummaryResult = ({ sourceText, summaryText }) => {
     const sourceWordCount = countWords(sourceText);
     const summaryWordCount = countWords(summaryText);
@@ -1219,7 +1229,39 @@ export async function summarizeTextContent({ text }) {
     };
 }
 
-const detectLikelyHinglish = () => false;
+const detectLikelyHinglish = (text = "") => {
+    if (!text.trim()) return false;
+
+    if (!/^[\x00-\x7F\s.,!?'"()\-:;@#/&%0-9]+$/.test(text)) {
+        return false;
+    }
+
+    const normalizedText = normalizeComparableText(text);
+    const tokens = getNormalizedLatinTokens(text);
+
+    if (tokens.length === 0) {
+        return false;
+    }
+
+    for (const phrase of HINGLISH_PHRASE_TRANSLATIONS.keys()) {
+        if (normalizedText.includes(normalizeComparableText(phrase))) {
+            return true;
+        }
+    }
+
+    const hinglishMatches = tokens.filter((token) => HINGLISH_HINT_WORDS.has(token)).length;
+    const englishMatches = tokens.filter((token) => ENGLISH_HINT_WORDS.has(token)).length;
+    const hinglishRatio = hinglishMatches / tokens.length;
+
+    if (tokens.length === 1) {
+        return HINGLISH_HINT_WORDS.has(tokens[0]) && !ENGLISH_HINT_WORDS.has(tokens[0]);
+    }
+
+    return (
+        hinglishMatches >= 2 ||
+        (hinglishMatches >= 1 && hinglishRatio >= 0.4 && englishMatches <= hinglishMatches)
+    );
+};
 
 const detectLikelyEnglish = (text = "") => {
     if (!text.trim()) return false;
@@ -1228,9 +1270,7 @@ const detectLikelyEnglish = (text = "") => {
         return false;
     }
 
-    const normalizedTokens = stripDiacritics(text.toLowerCase())
-        .split(/[^a-z]+/)
-        .filter(Boolean);
+    const normalizedTokens = getNormalizedLatinTokens(text);
 
     if (normalizedTokens.length === 0) {
         return false;
@@ -1285,9 +1325,68 @@ const detectSourceLanguageLocally = async (text) => {
     };
 };
 
-const translateHinglishText = (text = "") => text;
+const translateHinglishText = (text = "") => {
+    const normalizedText = normalizeComparableText(text);
+    const exactPhraseTranslation = HINGLISH_PHRASE_TRANSLATIONS.get(normalizedText);
+
+    if (exactPhraseTranslation) {
+        return exactPhraseTranslation;
+    }
+
+    let translatedText = normalizedText;
+    const phrasesByLength = [...HINGLISH_PHRASE_TRANSLATIONS.entries()].sort(
+        ([leftPhrase], [rightPhrase]) => rightPhrase.length - leftPhrase.length,
+    );
+
+    for (const [phrase, translation] of phrasesByLength) {
+        const normalizedPhrase = normalizeComparableText(phrase);
+        translatedText = translatedText.replace(
+            new RegExp(`\\b${escapeRegExp(normalizedPhrase)}\\b`, "g"),
+            translation,
+        );
+    }
+
+    const translatedTokens = translatedText
+        .split(/\s+/)
+        .map((token) => HINGLISH_TOKEN_TRANSLATIONS.get(token) ?? token)
+        .filter(Boolean);
+
+    return translatedTokens.join(" ").replace(/\s+/g, " ").trim();
+};
+
+const getHinglishTranslation = (text = "") => {
+    if (!detectLikelyHinglish(text)) {
+        return null;
+    }
+
+    const translatedText = translateHinglishText(text);
+
+    if (
+        !translatedText ||
+        isSuspiciousTranslationResult({
+            sourceText: text,
+            translatedText,
+            sourceIsoCode: "hi",
+        })
+    ) {
+        return null;
+    }
+
+    return translatedText;
+};
 
 const detectSourceLanguage = async (text) => {
+    if (detectLikelyHinglish(text)) {
+        return {
+            sourceIsoCode: "hi",
+            sourceNllbCode: ISO_TO_NLLB_LANGUAGE.hi,
+            sourceLanguage: "Hinglish",
+            confidence: null,
+            detectionModel: "hinglish heuristic",
+            detectedByHeuristic: true,
+        };
+    }
+
     if (detectLikelyEnglish(text)) {
         return {
             sourceIsoCode: "en",
@@ -1364,10 +1463,33 @@ export async function translateTextToEnglish({ text }) {
         };
     }
 
+    const hinglishTranslation = getHinglishTranslation(text);
+    if (hinglishTranslation) {
+        return {
+            checkedAt: new Date().toISOString(),
+            models: {
+                detection: detection.detectionModel,
+                translation: "hinglish heuristic",
+            },
+            sourceLanguage: detection.sourceLanguage,
+            sourceIsoCode: detection.sourceIsoCode,
+            sourceNllbCode: detection.sourceNllbCode,
+            targetLanguage: "English",
+            targetIsoCode: "en",
+            targetNllbCode: primaryTargetCode || ISO_TO_NLLB_LANGUAGE.en,
+            confidencePercent:
+                detection.confidence == null ? null : toPercent(detection.confidence),
+            translatedText: hinglishTranslation,
+            note: "Translated common Hinglish wording with the local heuristic.",
+        };
+    }
+
     const translationAttempts = [];
-    const candidateModels = [DEFAULT_TRANSLATION_MODEL, FALLBACK_TRANSLATION_MODEL].filter(
-        (model, index, allModels) => allModels.indexOf(model) === index,
-    );
+    const candidateModels = [
+        DEFAULT_TRANSLATION_MODEL,
+        FALLBACK_TRANSLATION_MODEL,
+        NLLB_TRANSLATION_FALLBACK_MODEL,
+    ].filter((model, index, allModels) => allModels.indexOf(model) === index);
 
     let translatedText = null;
     let usedModel = DEFAULT_TRANSLATION_MODEL;
@@ -1400,6 +1522,15 @@ export async function translateTextToEnglish({ text }) {
                     sourceIsoCode: detection.sourceIsoCode,
                 })
             ) {
+                const fallbackTranslation = getHinglishTranslation(text);
+                if (fallbackTranslation) {
+                    translatedText = fallbackTranslation;
+                    usedModel = "hinglish heuristic";
+                    sourceLanguageCode = detection.sourceNllbCode;
+                    targetLanguageCode = primaryTargetCode || ISO_TO_NLLB_LANGUAGE.en;
+                    break;
+                }
+
                 translationAttempts.push(`${model}: suspicious translation output`);
                 continue;
             }
