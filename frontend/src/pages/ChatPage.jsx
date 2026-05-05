@@ -33,10 +33,16 @@ const buildReplyPayload = (message) => ({
   messageId: message._id,
   senderId: message.senderId,
   text: message.text || "",
-  attachment: message.metadata?.attachments?.[0]
+  attachment: message.metadata?.attachments?.length
     ? {
-        name: message.metadata.attachments[0].name,
-        type: message.metadata.attachments[0].type,
+        name:
+          message.metadata.attachments.length > 1
+            ? `${message.metadata.attachments.length} attachments`
+            : message.metadata.attachments[0].name,
+        type:
+          message.metadata.attachments.length > 1
+            ? "file"
+            : message.metadata.attachments[0].type,
       }
     : null,
 });
@@ -69,7 +75,7 @@ const ChatPage = () => {
   const [messages, setMessages] = useState([]);
   const [messageText, setMessageText] = useState("");
   const [socketReady, setSocketReady] = useState(false);
-  const [pendingAttachment, setPendingAttachment] = useState(null);
+  const [pendingAttachments, setPendingAttachments] = useState([]);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const [aiDetectionResult, setAiDetectionResult] = useState(null);
   const [detectingMessageId, setDetectingMessageId] = useState(null);
@@ -86,6 +92,7 @@ const ChatPage = () => {
   const [isTargetUserOnline, setIsTargetUserOnline] = useState(false);
   const [translatedMessages, setTranslatedMessages] = useState({});
   const [translatingMessageId, setTranslatingMessageId] = useState(null);
+  const [aiMessageStatuses, setAiMessageStatuses] = useState({});
   const [activeSearchMatchIndex, setActiveSearchMatchIndex] = useState(0);
 
   const { authUser } = useAuthUser();
@@ -207,6 +214,7 @@ const ChatPage = () => {
     setMessages(history);
     setTargetUserReadAt(getLatestReadAt(history));
     setTranslatedMessages({});
+    setAiMessageStatuses({});
   }, [history]);
 
   useEffect(() => {
@@ -344,6 +352,21 @@ const ChatPage = () => {
   }, [messages, typingUserId]);
 
   useEffect(() => {
+    const canAutoFocusComposer =
+      typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches;
+
+    if (!canAutoFocusComposer || isSearchExpanded) return;
+
+    const focusTimer = window.setTimeout(() => {
+      messageInputRef.current?.focus({ preventScroll: true });
+    }, 120);
+
+    return () => {
+      window.clearTimeout(focusTimer);
+    };
+  }, [isSearchExpanded, targetUserId]);
+
+  useEffect(() => {
     if (isSearchExpanded) return;
     setMessageSearch("");
     setActiveSearchMatchIndex(0);
@@ -454,15 +477,28 @@ useEffect(() => {
   };
 
   const handleAttachmentSelect = async (event) => {
-    const selectedFile = event.target.files?.[0];
-    if (!selectedFile) return;
+    const selectedFiles = Array.from(event.target.files || []);
+    if (!selectedFiles.length) return;
 
     setIsUploadingAttachment(true);
 
     try {
-      const response = await uploadChatAttachment(selectedFile);
-      setPendingAttachment(response.attachment);
-      toast.success("Attachment uploaded");
+      const uploadedAttachments = [];
+
+      for (const selectedFile of selectedFiles) {
+        const response = await uploadChatAttachment(selectedFile);
+        uploadedAttachments.push(response.attachment);
+      }
+
+      setPendingAttachments((currentAttachments) => [
+        ...currentAttachments,
+        ...uploadedAttachments,
+      ]);
+      toast.success(
+        uploadedAttachments.length === 1
+          ? "Attachment uploaded"
+          : `${uploadedAttachments.length} attachments uploaded`
+      );
       window.requestAnimationFrame(() => {
         messageInputRef.current?.focus();
       });
@@ -472,6 +508,16 @@ useEffect(() => {
       setIsUploadingAttachment(false);
       event.target.value = "";
     }
+  };
+
+  const handleRemovePendingAttachment = (attachmentIndex) => {
+    setPendingAttachments((currentAttachments) =>
+      currentAttachments.filter((_, index) => index !== attachmentIndex)
+    );
+  };
+
+  const handleClearPendingAttachments = () => {
+    setPendingAttachments([]);
   };
 
   const handleSearchChange = (event) => {
@@ -500,7 +546,7 @@ useEffect(() => {
     event.preventDefault();
 
     const trimmedText = messageText.trim();
-    if (!trimmedText && !pendingAttachment) {
+    if (!trimmedText && pendingAttachments.length === 0) {
       return;
     }
 
@@ -545,27 +591,42 @@ useEffect(() => {
     if (!socketReady || !socketRef.current) return;
 
     const trimmedText = messageText.trim();
-    if (!trimmedText && !pendingAttachment) return;
+    if (!trimmedText && pendingAttachments.length === 0) return;
 
-    const metadata = {};
-    if (pendingAttachment) {
-      metadata.attachments = [pendingAttachment];
-    }
-    if (replyingTo) {
-      metadata.replyTo = replyingTo;
-    }
+    const sendChatPayload = ({ text = "", attachment = null, includeReply = false }) => {
+      const metadata = {};
 
-    socketRef.current.send(
-      JSON.stringify({
-        type: "chat_message",
-        recipientId: targetUserId,
-        text: trimmedText,
-        metadata,
-      })
-    );
+      if (attachment) {
+        metadata.attachments = [attachment];
+      }
+
+      if (includeReply && replyingTo) {
+        metadata.replyTo = replyingTo;
+      }
+
+      socketRef.current.send(
+        JSON.stringify({
+          type: "chat_message",
+          recipientId: targetUserId,
+          text,
+          metadata,
+        })
+      );
+    };
+
+    if (trimmedText) {
+      sendChatPayload({ text: trimmedText, includeReply: true });
+      pendingAttachments.forEach((attachment) => {
+        sendChatPayload({ attachment });
+      });
+    } else {
+      pendingAttachments.forEach((attachment, index) => {
+        sendChatPayload({ attachment, includeReply: index === 0 });
+      });
+    }
 
     setMessageText("");
-    setPendingAttachment(null);
+    setPendingAttachments([]);
     setReplyingTo(null);
     stopTyping();
     queryClient.invalidateQueries({ queryKey: ["friends"] });
@@ -591,16 +652,49 @@ useEffect(() => {
   navigate(`/call/${callId}?mode=outgoing&peer=${targetUserId}`);
 };
 
+  const setAiMessageStatus = (messageId, status) => {
+    setAiMessageStatuses((currentStatuses) => ({
+      ...currentStatuses,
+      [messageId]: {
+        updatedAt: new Date().toISOString(),
+        ...status,
+      },
+    }));
+  };
+
+  const clearAiMessageStatus = (messageId) => {
+    setAiMessageStatuses((currentStatuses) => {
+      const nextStatuses = { ...currentStatuses };
+      delete nextStatuses[messageId];
+      return nextStatuses;
+    });
+  };
+
+  const getAiErrorMessage = (error, fallbackMessage) =>
+    error?.response?.data?.message || fallbackMessage;
+
   const runDetectionForMessage = async (message, { force = false } = {}) => {
     const attachment = message.metadata?.attachments?.[0];
     const text = message.text?.trim();
 
     if (attachment?.type === "image") {
       setDetectingMessageId(message._id);
+      setAiMessageStatus(message._id, {
+        type: "detect",
+        state: "loading",
+        label: "Scanning image",
+        message: force ? "Refreshing image safety result..." : "Checking image safety signals...",
+      });
 
       try {
         const result = await detectImageMutation({ messageId: message._id, force });
         setAiDetectionResult(result);
+        setAiMessageStatus(message._id, {
+          type: "detect",
+          state: "success",
+          label: result.cached && !force ? "Saved image result" : "Image check complete",
+          message: result.analysis?.overall?.message || "Image safety report is ready.",
+        });
         toast.success(
           force
             ? "AI image detection refreshed"
@@ -609,7 +703,14 @@ useEffect(() => {
               : "AI image detection complete"
         );
       } catch (error) {
-        toast.error(error?.response?.data?.message || "Could not run AI detection");
+        const messageText = getAiErrorMessage(error, "Could not run AI detection");
+        setAiMessageStatus(message._id, {
+          type: "detect",
+          state: "error",
+          label: "Image check failed",
+          message: messageText,
+        });
+        toast.error(messageText);
       } finally {
         setDetectingMessageId(null);
       }
@@ -622,10 +723,22 @@ useEffect(() => {
     }
 
     setDetectingMessageId(message._id);
+    setAiMessageStatus(message._id, {
+      type: "detect",
+      state: "loading",
+      label: "Scanning text",
+      message: force ? "Refreshing text detection result..." : "Checking text safety signals...",
+    });
 
     try {
       const result = await detectTextMutation({ messageId: message._id, force });
       setAiDetectionResult(result);
+      setAiMessageStatus(message._id, {
+        type: "detect",
+        state: "success",
+        label: result.cached && !force ? "Saved text result" : "Text check complete",
+        message: result.analysis?.overall?.message || "Text detection report is ready.",
+      });
       toast.success(
         force
           ? "AI text detection refreshed"
@@ -634,7 +747,14 @@ useEffect(() => {
             : "AI text detection complete"
       );
     } catch (error) {
-      toast.error(error?.response?.data?.message || "Could not run AI detection");
+      const messageText = getAiErrorMessage(error, "Could not run AI detection");
+      setAiMessageStatus(message._id, {
+        type: "detect",
+        state: "error",
+        label: "Text check failed",
+        message: messageText,
+      });
+      toast.error(messageText);
     } finally {
       setDetectingMessageId(null);
     }
@@ -649,10 +769,22 @@ useEffect(() => {
     }
 
     setCheckingLinkMessageId(message._id);
+    setAiMessageStatus(message._id, {
+      type: "link",
+      state: "loading",
+      label: "Checking links",
+      message: force ? "Refreshing link safety result..." : "Looking for suspicious link signals...",
+    });
 
     try {
       const result = await detectLinkMutation({ messageId: message._id, force });
       setAiDetectionResult(result);
+      setAiMessageStatus(message._id, {
+        type: "link",
+        state: "success",
+        label: result.cached && !force ? "Saved link result" : "Link check complete",
+        message: result.analysis?.overall?.message || "Link safety report is ready.",
+      });
       toast.success(
         force
           ? "Suspicious link check refreshed"
@@ -661,7 +793,14 @@ useEffect(() => {
             : "Suspicious link check complete"
       );
     } catch (error) {
-      toast.error(error?.response?.data?.message || "Could not check the link");
+      const messageText = getAiErrorMessage(error, "Could not check the link");
+      setAiMessageStatus(message._id, {
+        type: "link",
+        state: "error",
+        label: "Link check failed",
+        message: messageText,
+      });
+      toast.error(messageText);
     } finally {
       setCheckingLinkMessageId(null);
     }
@@ -675,6 +814,12 @@ useEffect(() => {
     }
 
     setTranslatingMessageId(message._id);
+    setAiMessageStatus(message._id, {
+      type: "translate",
+      state: "loading",
+      label: "Translating",
+      message: force ? "Refreshing English translation..." : "Detecting language and translating...",
+    });
 
     try {
       const result = await translateMessageMutation({ messageId: message._id, force });
@@ -682,6 +827,14 @@ useEffect(() => {
         ...currentTranslations,
         [message._id]: result,
       }));
+      setAiMessageStatus(message._id, {
+        type: "translate",
+        state: "success",
+        label: result.cacheStatus === "reused" || result.cached ? "Saved translation" : "Translation ready",
+        message:
+          result.translation?.note ||
+          `${result.translation?.sourceLanguage || "Message"} translated to English.`,
+      });
       const translationToastMessages = {
         reused: "Showing saved translation",
         refreshed: "Translation refreshed",
@@ -692,7 +845,14 @@ useEffect(() => {
           (force ? "Translation refreshed" : result.cached ? "Showing saved translation" : "Translated to English")
       );
     } catch (error) {
-      toast.error(error?.response?.data?.message || "Could not translate this message");
+      const messageText = getAiErrorMessage(error, "Could not translate this message");
+      setAiMessageStatus(message._id, {
+        type: "translate",
+        state: "error",
+        label: "Translation failed",
+        message: messageText,
+      });
+      toast.error(messageText);
     } finally {
       setTranslatingMessageId(null);
     }
@@ -710,10 +870,22 @@ useEffect(() => {
     }
 
     setSummarizingMessageId(message._id);
+    setAiMessageStatus(message._id, {
+      type: "summarize",
+      state: "loading",
+      label: "Summarizing",
+      message: force ? "Refreshing summary..." : "Condensing the message...",
+    });
 
     try {
       const result = await summarizeMessageMutation({ messageId: message._id, force });
       setAiDetectionResult(result);
+      setAiMessageStatus(message._id, {
+        type: "summarize",
+        state: "success",
+        label: result.cached && !force ? "Saved summary" : "Summary ready",
+        message: result.summary?.summaryText || "Summary report is ready.",
+      });
       toast.success(
         force
           ? "Summary refreshed"
@@ -722,7 +894,14 @@ useEffect(() => {
             : "Summary ready"
       );
     } catch (error) {
-      toast.error(error?.response?.data?.message || "Could not summarize this message");
+      const messageText = getAiErrorMessage(error, "Could not summarize this message");
+      setAiMessageStatus(message._id, {
+        type: "summarize",
+        state: "error",
+        label: "Summary failed",
+        message: messageText,
+      });
+      toast.error(messageText);
     } finally {
       setSummarizingMessageId(null);
     }
@@ -736,10 +915,22 @@ useEffect(() => {
     }
 
     setDescribingImageMessageId(message._id);
+    setAiMessageStatus(message._id, {
+      type: "describe_image",
+      state: "loading",
+      label: "Describing image",
+      message: force ? "Refreshing image description..." : "Reading visible image details...",
+    });
 
     try {
       const result = await describeImageMessageMutation({ messageId: message._id, force });
       setAiDetectionResult(result);
+      setAiMessageStatus(message._id, {
+        type: "describe_image",
+        state: "success",
+        label: result.cached && !force ? "Saved description" : "Description ready",
+        message: result.description?.descriptionText || "Image description is ready.",
+      });
       toast.success(
         force
           ? "Image description refreshed"
@@ -748,7 +939,14 @@ useEffect(() => {
             : "Image description ready"
       );
     } catch (error) {
-      toast.error(error?.response?.data?.message || "Could not describe this image");
+      const messageText = getAiErrorMessage(error, "Could not describe this image");
+      setAiMessageStatus(message._id, {
+        type: "describe_image",
+        state: "error",
+        label: "Description failed",
+        message: messageText,
+      });
+      toast.error(messageText);
     } finally {
       setDescribingImageMessageId(null);
     }
@@ -806,7 +1004,7 @@ useEffect(() => {
   }
 
   return (
-    <div className="h-[93vh] flex flex-col bg-base-100">
+    <div className="flex h-full min-h-0 flex-col bg-base-100">
       <AIDetectionModal
         result={aiDetectionResult}
         isRechecking={isRecheckingDetection}
@@ -835,7 +1033,7 @@ useEffect(() => {
         targetUser={targetUser}
       />
 
-      <div className="flex-1 overflow-y-auto px-4 py-5">
+      <div className="chat-thread-surface min-h-0 flex-1 overflow-y-auto px-4 py-5">
         <div className="mx-auto max-w-4xl space-y-3">
           {messages.map((message) => (
             <ChatMessageItem
@@ -848,6 +1046,7 @@ useEffect(() => {
               isHighlighted={highlightedMessageId === message._id}
               isRunningSummarize={summarizingMessageId === message._id}
               isRunningTranslation={translatingMessageId === message._id}
+              aiStatus={aiMessageStatuses[message._id]}
               message={message}
               onDeleteForEveryone={deleteMessageMutation}
               onDeleteForMe={hideMessageMutation}
@@ -878,12 +1077,13 @@ useEffect(() => {
         messageText={messageText}
         onAttachmentSelect={handleAttachmentSelect}
         onChangeMessageText={handleMessageTextChange}
-        onClearPendingAttachment={() => setPendingAttachment(null)}
+        onClearPendingAttachments={handleClearPendingAttachments}
+        onRemovePendingAttachment={handleRemovePendingAttachment}
         onClearReply={() => setReplyingTo(null)}
         onKeyDownMessageInput={handleComposerKeyDown}
         onOpenFilePicker={() => fileInputRef.current?.click()}
         onSubmit={handleSendMessage}
-        pendingAttachment={pendingAttachment}
+        pendingAttachments={pendingAttachments}
         replyingTo={replyingTo}
         socketReady={socketReady}
       />

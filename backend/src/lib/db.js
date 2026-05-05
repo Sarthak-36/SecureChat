@@ -99,6 +99,32 @@ const schemaQueries = [
     ON ai_message_checks (message_id, check_type);
   `,
   `
+    CREATE TABLE IF NOT EXISTS hidden_notifications (
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      notification_type TEXT NOT NULL,
+      source_id UUID NOT NULL,
+      hidden_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, notification_type, source_id)
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS idx_hidden_notifications_user_type
+    ON hidden_notifications (user_id, notification_type);
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS read_notifications (
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      notification_type TEXT NOT NULL,
+      source_id UUID NOT NULL,
+      read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, notification_type, source_id)
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS idx_read_notifications_user_type
+    ON read_notifications (user_id, notification_type);
+  `,
+  `
     ALTER TABLE ai_message_checks
     DROP CONSTRAINT IF EXISTS ai_message_checks_check_type_check;
   `,

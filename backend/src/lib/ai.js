@@ -10,6 +10,7 @@ const HF_API_BASE_URL = "https://router.huggingface.co/hf-inference/models";
 const HF_DIRECT_INFERENCE_API_BASE_URL = "https://api-inference.huggingface.co/models";
 const HF_CHAT_COMPLETIONS_URL = "https://router.huggingface.co/v1/chat/completions";
 const SAFE_BROWSING_API_URL = "https://safebrowsing.googleapis.com/v4/threatMatches:find";
+const HF_INFERENCE_TIMEOUT_MS = Number(process.env.HF_INFERENCE_TIMEOUT_MS || 20000);
 const DEFAULT_NSFW_MODEL = process.env.HF_NSFW_MODEL || "Falconsai/nsfw_image_detection";
 const DEFAULT_AI_IMAGE_MODEL =
     process.env.HF_AI_IMAGE_MODEL || "prithivMLmods/deepfake-detector-model-v1";
@@ -454,6 +455,49 @@ const parseInferenceError = async (response) => {
     }
 };
 
+const createProviderRequestError = ({ error, model, publicMessage, timeoutMs }) => {
+    const isTimeout =
+        error?.name === "AbortError" ||
+        error?.cause?.code === "UND_ERR_CONNECT_TIMEOUT" ||
+        error?.cause?.code === "UND_ERR_HEADERS_TIMEOUT" ||
+        error?.code === "UND_ERR_CONNECT_TIMEOUT";
+    const detail = isTimeout
+        ? `Timed out after ${timeoutMs}ms`
+        : error?.cause?.code || error?.message || "Network request failed";
+    const wrappedError = new Error(`Inference request failed for ${model}: ${detail}`);
+    wrappedError.statusCode = isTimeout ? 504 : 503;
+    wrappedError.publicMessage = publicMessage;
+    wrappedError.providerError = detail;
+    return wrappedError;
+};
+
+const fetchHuggingFaceInference = async ({ model, body, headers = {}, publicMessage }) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), HF_INFERENCE_TIMEOUT_MS);
+
+    try {
+        return await fetch(`${HF_API_BASE_URL}/${model}`, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
+                Accept: "application/json",
+                ...headers,
+            },
+            body,
+            signal: controller.signal,
+        });
+    } catch (error) {
+        throw createProviderRequestError({
+            error,
+            model,
+            publicMessage,
+            timeoutMs: HF_INFERENCE_TIMEOUT_MS,
+        });
+    } finally {
+        clearTimeout(timeoutId);
+    }
+};
+
 const normalizePredictions = (payload) => {
     const flattenedPayload =
         Array.isArray(payload) && Array.isArray(payload[0]) ? payload[0] : payload;
@@ -502,14 +546,13 @@ const mapPredictionLabels = (predictions, model) => {
 const runImageClassification = async ({ buffer, mimeType, model }) => {
     ensureInferenceConfigured();
 
-    const response = await fetch(`${HF_API_BASE_URL}/${model}`, {
-        method: "POST",
+    const response = await fetchHuggingFaceInference({
+        model,
         headers: {
-            Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
             "Content-Type": mimeType || "application/octet-stream",
-            Accept: "application/json",
         },
         body: buffer,
+        publicMessage: "AI detection could not analyze this image right now",
     });
 
     if (!response.ok) {
@@ -528,12 +571,10 @@ const runTextClassification = async ({ text, model }) => {
     ensureInferenceConfigured();
     const preparedText = prepareTextForModel(text, model);
 
-    const response = await fetch(`${HF_API_BASE_URL}/${model}`, {
-        method: "POST",
+    const response = await fetchHuggingFaceInference({
+        model,
         headers: {
-            Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
             "Content-Type": "application/json",
-            Accept: "application/json",
         },
         body: JSON.stringify({
             inputs: preparedText,
@@ -541,6 +582,7 @@ const runTextClassification = async ({ text, model }) => {
                 top_k: 6,
             },
         }),
+        publicMessage: "AI detection could not analyze this message right now",
     });
 
     if (!response.ok) {
@@ -558,12 +600,10 @@ const runTextClassification = async ({ text, model }) => {
 const runTranslation = async ({ text, srcLang, tgtLang, model }) => {
     ensureInferenceConfigured();
 
-    const response = await fetch(`${HF_API_BASE_URL}/${model}`, {
-        method: "POST",
+    const response = await fetchHuggingFaceInference({
+        model,
         headers: {
-            Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
             "Content-Type": "application/json",
-            Accept: "application/json",
         },
         body: JSON.stringify({
             inputs: text,
@@ -573,6 +613,7 @@ const runTranslation = async ({ text, srcLang, tgtLang, model }) => {
                 clean_up_tokenization_spaces: true,
             },
         }),
+        publicMessage: "Translation could not analyze this message right now",
     });
 
     if (!response.ok) {
@@ -1417,13 +1458,20 @@ const detectSourceLanguage = async (text) => {
 
         throw new Error("Local language detection confidence too low");
     } catch (error) {
-        const predictions = await runTextClassification({
-            text,
-            model: DEFAULT_LANGUAGE_DETECTION_MODEL,
-        });
+        let predictions;
+        try {
+            predictions = await runTextClassification({
+                text,
+                model: DEFAULT_LANGUAGE_DETECTION_MODEL,
+            });
+        } catch (classificationError) {
+            classificationError.publicMessage =
+                "Translation could not analyze this message right now";
+            throw classificationError;
+        }
+
         const topPrediction = predictions[0];
         const sourceIsoCode = normalizeLabel(topPrediction?.label || "en");
-
         return {
             sourceIsoCode,
             sourceNllbCode: ISO_TO_NLLB_LANGUAGE[sourceIsoCode] || ISO_TO_NLLB_LANGUAGE.en,

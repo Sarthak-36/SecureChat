@@ -87,6 +87,26 @@ export async function acceptFriendRequest(requestId) {
   return response.data;
 }
 
+export async function hideAcceptedFriendRequestNotification(requestId) {
+  const response = await axiosInstance.delete(`/users/notifications/accepted-friend-requests/${requestId}`);
+  return response.data;
+}
+
+export async function clearAcceptedFriendRequestNotifications() {
+  const response = await axiosInstance.delete("/users/notifications/accepted-friend-requests");
+  return response.data;
+}
+
+export async function getUnreadNotificationCount() {
+  const response = await axiosInstance.get("/users/notifications/unread-count");
+  return response.data;
+}
+
+export async function markNotificationsRead() {
+  const response = await axiosInstance.post("/users/notifications/mark-read");
+  return response.data;
+}
+
 export async function getChatToken() {
   const response = await axiosInstance.get("/chat/token");
   return response.data;
