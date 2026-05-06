@@ -33,7 +33,11 @@ const callRooms = new Map();
 const presenceSubscribers = new Map();
 const pendingCallInvites = new Map();
 const activeCallSessions = new Map();
+const callLeaveTimers = new Map();
+const endedCallEvents = new Map();
 const CALL_INVITE_TIMEOUT_MS = 30_000;
+const CALL_LEAVE_GRACE_MS = 1500;
+const ENDED_CALL_EVENT_TTL_MS = 60_000;
 
 const getConversationId = (userA, userB) => [userA, userB].sort().join(":");
 
@@ -66,6 +70,78 @@ const removeFromSetMap = (map, key, socket) => {
   sockets.delete(socket);
   if (sockets.size === 0) {
     map.delete(key);
+  }
+};
+
+const getCallUserKey = (callId, userId) => `${callId}:${userId}`;
+
+const clearScheduledCallLeave = (callId, userId) => {
+  if (!callId || !userId) return;
+
+  const callUserKey = getCallUserKey(callId, userId);
+  const leaveTimer = callLeaveTimers.get(callUserKey);
+
+  if (!leaveTimer) return;
+
+  clearTimeout(leaveTimer);
+  callLeaveTimers.delete(callUserKey);
+};
+
+const hasUserInCallRoom = (callId, userId) => {
+  const sockets = callRooms.get(callId);
+  if (!sockets) return false;
+
+  for (const socket of sockets) {
+    if (socket.userId === userId) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const rememberEndedCallEvent = ({ callId, userId, callerId = null, recipientId = null }) => {
+  if (!callId || !userId) return;
+
+  const existingEvent = endedCallEvents.get(callId);
+  if (existingEvent?.timeoutId) {
+    clearTimeout(existingEvent.timeoutId);
+  }
+
+  const timeoutId = setTimeout(() => {
+    endedCallEvents.delete(callId);
+  }, ENDED_CALL_EVENT_TTL_MS);
+
+  endedCallEvents.set(callId, {
+    callerId,
+    recipientId,
+    timeoutId,
+    userId,
+  });
+};
+
+const getOtherCallParticipantId = (callEvent, userId) => {
+  if (!callEvent || !userId) return null;
+  if (callEvent.callerId === userId) return callEvent.recipientId;
+  if (callEvent.recipientId === userId) return callEvent.callerId;
+  return null;
+};
+
+const broadcastPeerLeft = ({ callId, userId, callerId = null, recipientId = null, senderSocket = null }) => {
+  const payload = {
+    type: "peer_left",
+    callId,
+    userId,
+  };
+
+  rememberEndedCallEvent({ callId, userId, callerId, recipientId });
+  broadcastToCallRoom(callId, senderSocket, payload);
+
+  const otherParticipantId =
+    userId === callerId ? recipientId : userId === recipientId ? callerId : null;
+
+  if (otherParticipantId) {
+    broadcastToUser(otherParticipantId, payload);
   }
 };
 
@@ -256,6 +332,36 @@ const scheduleCallInviteTimeout = ({ callId, callerId, recipientId }) => {
     recipientId,
     timeoutId,
   });
+};
+
+const scheduleCallSocketLeave = ({ callId, userId }) => {
+  if (!callId || !userId) return;
+
+  clearScheduledCallLeave(callId, userId);
+
+  const callUserKey = getCallUserKey(callId, userId);
+  const leaveTimer = setTimeout(async () => {
+    callLeaveTimers.delete(callUserKey);
+
+    if (hasUserInCallRoom(callId, userId)) return;
+
+    const activeCall = activeCallSessions.get(callId);
+
+    try {
+      await endActiveCallSession(callId);
+    } catch (error) {
+      console.error("Failed to save ended call message after socket close", error);
+    }
+
+    broadcastPeerLeft({
+      callId,
+      userId,
+      callerId: activeCall?.callerId || null,
+      recipientId: activeCall?.recipientId || null,
+    });
+  }, CALL_LEAVE_GRACE_MS);
+
+  callLeaveTimers.set(callUserKey, leaveTimer);
 };
 
 app.use(
@@ -468,6 +574,19 @@ wss.on("connection", (socket) => {
 
         case "join_call": {
           if (!socket.userId || !payload.callId) return;
+          const endedCallEvent = endedCallEvents.get(payload.callId);
+          const endedByOtherParticipant = getOtherCallParticipantId(endedCallEvent, socket.userId);
+
+          if (endedByOtherParticipant) {
+            sendJson(socket, {
+              type: "peer_left",
+              callId: payload.callId,
+              userId: endedCallEvent.userId,
+            });
+            break;
+          }
+
+          clearScheduledCallLeave(payload.callId, socket.userId);
           socket.subscriptions.calls.add(payload.callId);
           joinSetMap(callRooms, payload.callId, socket);
           broadcastToCallRoom(payload.callId, socket, {
@@ -502,6 +621,8 @@ wss.on("connection", (socket) => {
         case "leave_call": {
           if (!payload.callId) return;
           const pendingInvite = pendingCallInvites.get(payload.callId);
+          const activeCall = activeCallSessions.get(payload.callId);
+          clearScheduledCallLeave(payload.callId, socket.userId);
 
           if (pendingInvite && socket.userId === pendingInvite.callerId) {
             clearPendingCallInvite(payload.callId);
@@ -530,10 +651,12 @@ wss.on("connection", (socket) => {
 
           removeFromSetMap(callRooms, payload.callId, socket);
           socket.subscriptions.calls.delete(payload.callId);
-          broadcastToCallRoom(payload.callId, socket, {
-            type: "peer_left",
+          broadcastPeerLeft({
             callId: payload.callId,
             userId: socket.userId,
+            callerId: activeCall?.callerId || pendingInvite?.callerId || null,
+            recipientId: activeCall?.recipientId || pendingInvite?.recipientId || null,
+            senderSocket: socket,
           });
           break;
         }
@@ -560,15 +683,8 @@ wss.on("connection", (socket) => {
     }
 
     for (const callId of socket.subscriptions.calls) {
-      endActiveCallSession(callId).catch((error) => {
-        console.error("Failed to save ended call message after socket close", error);
-      });
       removeFromSetMap(callRooms, callId, socket);
-      broadcastToCallRoom(callId, socket, {
-        type: "peer_left",
-        callId,
-        userId: socket.userId,
-      });
+      scheduleCallSocketLeave({ callId, userId: socket.userId });
     }
 
     for (const presenceUserId of socket.subscriptions.presenceUsers) {

@@ -86,6 +86,7 @@ const CallPage = () => {
   const hasSentConnectedRef = useRef(false);
   const returnTimerRef = useRef(null);
   const outgoingTimeoutRef = useRef(null);
+  const isCallEndingRef = useRef(false);
 
   const [isInitializing, setIsInitializing] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
@@ -95,6 +96,7 @@ const CallPage = () => {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [deviceError, setDeviceError] = useState(null);
   const [setupAttempt, setSetupAttempt] = useState(0);
+  const [hasCallInviteAnswered, setHasCallInviteAnswered] = useState(false);
 
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const callMode = searchParams.get("mode");
@@ -148,7 +150,35 @@ const CallPage = () => {
     },
     [returnFromCall]
   );
+  const clearOutgoingCallTimeout = useCallback(() => {
+    if (outgoingTimeoutRef.current) {
+      window.clearTimeout(outgoingTimeoutRef.current);
+      outgoingTimeoutRef.current = null;
+    }
+  }, []);
+  const sendLeaveCall = useCallback(() => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+
+    socketRef.current.send(JSON.stringify({ type: "leave_call", callId }));
+    socketRef.current.close();
+  }, [callId]);
+  const finishCallAndReturn = useCallback(
+    (nextStatusText, delayMs = 1200) => {
+      isCallEndingRef.current = true;
+      clearOutgoingCallTimeout();
+      setStatusText(nextStatusText);
+
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = null;
+      }
+      remoteStreamRef.current = new MediaStream();
+
+      scheduleReturnFromCall(delayMs);
+    },
+    [clearOutgoingCallTimeout, scheduleReturnFromCall]
+  );
   const retryDeviceAccess = () => {
+    isCallEndingRef.current = false;
     setDeviceError(null);
     setStatusText("Preparing your devices...");
     setIsInitializing(true);
@@ -156,25 +186,35 @@ const CallPage = () => {
   };
 
   useEffect(() => {
-    if (callMode !== "outgoing" || isConnected || hasDeviceError) return undefined;
+    isCallEndingRef.current = false;
+    setHasCallInviteAnswered(false);
+    clearOutgoingCallTimeout();
+  }, [callId, clearOutgoingCallTimeout]);
 
-    if (outgoingTimeoutRef.current) {
-      window.clearTimeout(outgoingTimeoutRef.current);
+  useEffect(() => {
+    if (callMode !== "outgoing" || isConnected || hasDeviceError || hasCallInviteAnswered) {
+      clearOutgoingCallTimeout();
+      return undefined;
     }
 
+    clearOutgoingCallTimeout();
+
     outgoingTimeoutRef.current = window.setTimeout(() => {
-      setStatusText("No answer");
       toast.error("No one answered the call");
-      scheduleReturnFromCall();
+      finishCallAndReturn("No answer");
     }, outgoingCallTimeoutMs);
 
     return () => {
-      if (outgoingTimeoutRef.current) {
-        window.clearTimeout(outgoingTimeoutRef.current);
-        outgoingTimeoutRef.current = null;
-      }
+      clearOutgoingCallTimeout();
     };
-  }, [callMode, hasDeviceError, isConnected, scheduleReturnFromCall]);
+  }, [
+    callMode,
+    clearOutgoingCallTimeout,
+    hasCallInviteAnswered,
+    hasDeviceError,
+    finishCallAndReturn,
+    isConnected,
+  ]);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -235,7 +275,7 @@ const CallPage = () => {
   };
 
   useEffect(() => {
-    if (!authUser || !tokenData?.token || !callId) return;
+    if (!authUser || !tokenData?.token || !callId || isCallEndingRef.current) return;
 
     let isCancelled = false;
 
@@ -269,6 +309,8 @@ const CallPage = () => {
       }
 
       peerConnection.ontrack = (event) => {
+        if (isCallEndingRef.current) return;
+
         for (const track of event.streams[0]?.getTracks() || [event.track]) {
           const alreadyAdded = remoteStream.getTracks().some((existingTrack) => existingTrack.id === track.id);
           if (!alreadyAdded) {
@@ -298,6 +340,8 @@ const CallPage = () => {
       };
 
       peerConnection.onconnectionstatechange = () => {
+        if (isCallEndingRef.current) return;
+
         const state = peerConnection.connectionState;
         if (state === "connected") {
           setStatusText("Connected");
@@ -337,6 +381,11 @@ const CallPage = () => {
         socketRef.current = socket;
 
         socket.addEventListener("open", () => {
+          if (isCallEndingRef.current) {
+            socket.close();
+            return;
+          }
+
           setStatusText(callMode === "outgoing" ? "Ringing..." : "Joining the call...");
           socket.send(JSON.stringify({ type: "join_call", callId }));
           setIsInitializing(false);
@@ -346,6 +395,7 @@ const CallPage = () => {
           const payload = JSON.parse(event.data);
 
           if (payload.userId === authUser._id) return;
+          if (isCallEndingRef.current) return;
 
           if (payload.type === "peer_joined") {
             setStatusText("Connecting...");
@@ -397,30 +447,23 @@ const CallPage = () => {
           }
 
           if (payload.type === "peer_left") {
-            setStatusText("The other person left the call");
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = null;
-            }
-            remoteStreamRef.current = new MediaStream();
-            scheduleReturnFromCall();
+            finishCallAndReturn("The other person left the call");
           }
 
           if (payload.type === "call_invite_response" && payload.callId === callId) {
             if (payload.accepted) {
+              setHasCallInviteAnswered(true);
+              clearOutgoingCallTimeout();
               setStatusText("Answered. Connecting...");
             } else if (payload.reason === "declined") {
-              setStatusText("Call declined");
               toast.error(`${payload.responderName || "The other person"} declined the call`);
+              finishCallAndReturn("Call declined");
             } else if (payload.reason === "busy") {
-              setStatusText("The other person is busy");
               toast.error(`${payload.responderName || "The other person"} is already on a call`);
+              finishCallAndReturn("The other person is busy");
             } else if (payload.reason === "unavailable") {
-              setStatusText("The other person is unavailable");
               toast.error("The other person is not available for a call right now");
-            }
-
-            if (!payload.accepted) {
-              scheduleReturnFromCall();
+              finishCallAndReturn("The other person is unavailable");
             }
           }
 
@@ -429,9 +472,8 @@ const CallPage = () => {
           }
 
           if (payload.type === "call_invite_timeout" && payload.callId === callId) {
-            setStatusText("No answer");
             toast.error("No one answered the call");
-            scheduleReturnFromCall();
+            finishCallAndReturn("No answer");
           }
 
           if (payload.type === "error") {
@@ -446,7 +488,7 @@ const CallPage = () => {
         });
 
         socket.addEventListener("close", () => {
-          if (!isCancelled) {
+          if (!isCancelled && !isCallEndingRef.current) {
             setStatusText("Call signaling closed");
           }
         });
@@ -477,19 +519,10 @@ const CallPage = () => {
       window.removeEventListener("pageshow", handleVisibilitySync);
 
       if (socketRef.current?.readyState === WebSocket.OPEN) {
-        socketRef.current.send(JSON.stringify({ type: "leave_call", callId }));
         socketRef.current.close();
       }
 
-      if (returnTimerRef.current) {
-        window.clearTimeout(returnTimerRef.current);
-        returnTimerRef.current = null;
-      }
-
-      if (outgoingTimeoutRef.current) {
-        window.clearTimeout(outgoingTimeoutRef.current);
-        outgoingTimeoutRef.current = null;
-      }
+      clearOutgoingCallTimeout();
 
       peerConnectionRef.current?.close();
       peerConnectionRef.current = null;
@@ -507,7 +540,15 @@ const CallPage = () => {
       }
       remoteStreamRef.current = null;
     };
-  }, [authUser, tokenData?.token, callId, callMode, scheduleReturnFromCall, setupAttempt]);
+  }, [
+    authUser,
+    tokenData?.token,
+    callId,
+    callMode,
+    clearOutgoingCallTimeout,
+    finishCallAndReturn,
+    setupAttempt,
+  ]);
 
   useEffect(() => {
     if (!isInitializing) {
@@ -539,6 +580,8 @@ const CallPage = () => {
   }, [isCameraOff, isMuted]);
 
   const leaveCall = () => {
+    isCallEndingRef.current = true;
+    sendLeaveCall();
     returnFromCall();
   };
 
