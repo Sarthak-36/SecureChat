@@ -20,6 +20,7 @@ import {
   offset,
   autoUpdate,
 } from "@floating-ui/react";
+import { containsLink } from "../../lib/links";
 
 const MessageActions = ({
   canDeleteForEveryone,
@@ -61,6 +62,7 @@ const MessageActions = ({
   });
 
   const hasText = Boolean(message.text?.trim());
+  const hasLink = containsLink(message.text);
   const hasImageAttachment = message.metadata?.attachments?.[0]?.type === "image";
 
   const isAnyAiRunning =
@@ -326,19 +328,21 @@ const MessageActions = ({
               </li>
             ) : null}
 
-            <li>
-              <button
-                className="btn btn-ghost btn-sm w-full justify-start"
-                disabled={isAnyAiRunning}
-                onClick={() => {
-                  onRunLinkCheck(message);
-                  closeAllMenus();
-                }}
-              >
-                <Link2 className="mr-2 size-4" />
-                {isRunningLinkCheck ? "Checking..." : "Link Check"}
-              </button>
-            </li>
+            {hasLink ? (
+              <li>
+                <button
+                  className="btn btn-ghost btn-sm w-full justify-start"
+                  disabled={isAnyAiRunning}
+                  onClick={() => {
+                    onRunLinkCheck(message);
+                    closeAllMenus();
+                  }}
+                >
+                  <Link2 className="mr-2 size-4" />
+                  {isRunningLinkCheck ? "Checking..." : "Link Check"}
+                </button>
+              </li>
+            ) : null}
 
             <li>
               <button

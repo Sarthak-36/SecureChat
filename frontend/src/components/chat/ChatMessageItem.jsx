@@ -42,7 +42,6 @@ const ChatMessageItem = ({
 }) => {
   const isOwnMessage = message.senderId === authUserId;
   const attachments = Array.isArray(message.metadata?.attachments) ? message.metadata.attachments : [];
-  const attachment = attachments[0];
   const shouldHighlight = searchTerm && message.text?.toLowerCase().includes(searchTerm);
   const isRead = isOwnMessage && readAt && new Date(message.createdAt).getTime() <= new Date(readAt).getTime();
   const callEvent = message.metadata?.callEvent;

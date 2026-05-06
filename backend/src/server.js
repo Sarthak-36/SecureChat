@@ -364,6 +364,328 @@ const scheduleCallSocketLeave = ({ callId, userId }) => {
   callLeaveTimers.set(callUserKey, leaveTimer);
 };
 
+const markConversationRead = async ({ conversationId, userId }) => {
+  const readResult = await query(
+    `
+      INSERT INTO conversation_reads (user_id, conversation_id, last_read_at)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (user_id, conversation_id)
+      DO UPDATE SET last_read_at = EXCLUDED.last_read_at
+      RETURNING last_read_at
+    `,
+    [userId, conversationId]
+  );
+
+  return readResult.rows[0]?.last_read_at || new Date().toISOString();
+};
+
+const handleJoinConversation = async (socket, payload) => {
+  if (!socket.userId || !payload.conversationId) return;
+
+  const lastReadAt = await markConversationRead({
+    conversationId: payload.conversationId,
+    userId: socket.userId,
+  });
+
+  socket.subscriptions.conversations.add(payload.conversationId);
+  joinSetMap(conversationSubscribers, payload.conversationId, socket);
+  sendJson(socket, { type: "joined_conversation", conversationId: payload.conversationId });
+  broadcastToConversation(payload.conversationId, {
+    type: "conversation_read",
+    conversationId: payload.conversationId,
+    userId: socket.userId,
+    lastReadAt,
+  });
+};
+
+const handleSubscribePresence = (socket, payload) => {
+  if (!socket.userId) return;
+
+  const requestedUserIds = Array.isArray(payload.userIds)
+    ? [...new Set(payload.userIds.filter((userId) => typeof userId === "string"))]
+    : [];
+
+  replacePresenceSubscriptions(socket, requestedUserIds);
+
+  sendJson(socket, {
+    type: "presence_snapshot",
+    onlineUserIds: requestedUserIds.filter((userId) => socketsByUserId.has(userId)),
+  });
+};
+
+const handleMarkConversationRead = async (socket, payload) => {
+  if (!socket.userId || !payload.conversationId) return;
+
+  const lastReadAt = await markConversationRead({
+    conversationId: payload.conversationId,
+    userId: socket.userId,
+  });
+
+  broadcastToConversation(payload.conversationId, {
+    type: "conversation_read",
+    conversationId: payload.conversationId,
+    userId: socket.userId,
+    lastReadAt,
+  });
+};
+
+const handleTypingState = (socket, payload) => {
+  if (!socket.userId || !payload.conversationId) return;
+
+  broadcastToConversation(payload.conversationId, {
+    type: payload.type,
+    conversationId: payload.conversationId,
+    userId: socket.userId,
+  });
+};
+
+const handleChatMessage = async (socket, payload) => {
+  const normalizedText = payload.text?.trim() || "";
+  const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
+  const hasAttachments = Array.isArray(metadata.attachments) && metadata.attachments.length > 0;
+
+  if (!socket.userId || !payload.recipientId || (!normalizedText && !hasAttachments)) return;
+
+  const conversationId = getConversationId(socket.userId, payload.recipientId);
+  const messageType = hasAttachments ? "attachment" : "text";
+  const savedMessage = await query(
+    `
+      INSERT INTO messages (id, conversation_id, sender_id, recipient_id, text, message_type, metadata)
+      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+      RETURNING id, conversation_id, sender_id, recipient_id, text, message_type, metadata, created_at
+    `,
+    [
+      randomUUID(),
+      conversationId,
+      socket.userId,
+      payload.recipientId,
+      normalizedText,
+      messageType,
+      JSON.stringify(metadata),
+    ]
+  );
+
+  broadcastToConversation(conversationId, {
+    type: "chat_message",
+    message: serializeMessage(savedMessage.rows[0]),
+  });
+};
+
+const handleCallInvite = (socket, payload) => {
+  if (!socket.userId || !payload.recipientId || !payload.callId) return;
+
+  const deliveredCount = broadcastToUser(payload.recipientId, {
+    type: "incoming_call_invite",
+    callId: payload.callId,
+    fromUserId: socket.userId,
+    fromUserName: socket.user?.fullName || "Someone",
+    fromUserProfilePic: socket.user?.profilePic || "/default-avatar.svg",
+    createdAt: new Date().toISOString(),
+  });
+
+  clearPendingCallInvite(payload.callId);
+  scheduleCallInviteTimeout({
+    callId: payload.callId,
+    callerId: socket.userId,
+    recipientId: payload.recipientId,
+  });
+
+  if (deliveredCount === 0) {
+    sendJson(socket, {
+      type: "call_invite_pending_offline",
+      callId: payload.callId,
+      recipientId: payload.recipientId,
+    });
+  }
+};
+
+const handleCallInviteResponse = async (socket, payload) => {
+  if (!socket.userId || !payload.callId || !payload.recipientId) return;
+
+  const pendingInvite = clearPendingCallInvite(payload.callId);
+
+  if (payload.accepted) {
+    const callerId = pendingInvite?.callerId || payload.recipientId;
+    const recipientId = pendingInvite?.recipientId || socket.userId;
+
+    try {
+      activeCallSessions.set(payload.callId, {
+        callerId,
+        recipientId,
+        acceptedAt: Date.now(),
+        startedAt: null,
+        ended: false,
+      });
+    } catch (error) {
+      console.error("Failed to track active call session", error);
+    }
+  } else if (payload.reason === "declined") {
+    const callerId = pendingInvite?.callerId || payload.recipientId;
+    const recipientId = pendingInvite?.recipientId || socket.userId;
+
+    try {
+      await createMissedCallMessage({ callId: payload.callId, callerId, recipientId });
+    } catch (error) {
+      console.error("Failed to save declined call message", error);
+    }
+  }
+
+  broadcastToUser(payload.recipientId, {
+    type: "call_invite_response",
+    callId: payload.callId,
+    accepted: Boolean(payload.accepted),
+    recipientId: socket.userId,
+    responderName: socket.user?.fullName || "Someone",
+    reason: payload.reason || null,
+  });
+};
+
+const handleJoinCall = (socket, payload) => {
+  if (!socket.userId || !payload.callId) return;
+
+  const endedCallEvent = endedCallEvents.get(payload.callId);
+  const endedByOtherParticipant = getOtherCallParticipantId(endedCallEvent, socket.userId);
+
+  if (endedByOtherParticipant) {
+    sendJson(socket, {
+      type: "peer_left",
+      callId: payload.callId,
+      userId: endedCallEvent.userId,
+    });
+    return;
+  }
+
+  clearScheduledCallLeave(payload.callId, socket.userId);
+  socket.subscriptions.calls.add(payload.callId);
+  joinSetMap(callRooms, payload.callId, socket);
+  broadcastToCallRoom(payload.callId, socket, {
+    type: "peer_joined",
+    callId: payload.callId,
+    userId: socket.userId,
+  });
+};
+
+const handleCallSignal = (socket, payload) => {
+  if (!socket.userId || !payload.callId || !payload.signal) return;
+
+  broadcastToCallRoom(payload.callId, socket, {
+    type: "call_signal",
+    callId: payload.callId,
+    userId: socket.userId,
+    signal: payload.signal,
+  });
+};
+
+const handleCallConnected = (socket, payload) => {
+  if (!socket.userId || !payload.callId) return;
+
+  const activeCall = activeCallSessions.get(payload.callId);
+  if (activeCall && !activeCall.startedAt) {
+    activeCall.startedAt = Date.now();
+  }
+};
+
+const handleLeaveCall = async (socket, payload) => {
+  if (!payload.callId) return;
+
+  const pendingInvite = pendingCallInvites.get(payload.callId);
+  const activeCall = activeCallSessions.get(payload.callId);
+  clearScheduledCallLeave(payload.callId, socket.userId);
+
+  if (pendingInvite && socket.userId === pendingInvite.callerId) {
+    clearPendingCallInvite(payload.callId);
+    try {
+      await createMissedCallMessage({
+        callId: payload.callId,
+        callerId: pendingInvite.callerId,
+        recipientId: pendingInvite.recipientId,
+      });
+    } catch (error) {
+      console.error("Failed to save missed call message after caller ended call", error);
+    }
+    broadcastToUser(pendingInvite.recipientId, {
+      type: "call_invite_cancelled",
+      callId: payload.callId,
+      callerId: pendingInvite.callerId,
+      recipientId: pendingInvite.recipientId,
+    });
+  }
+
+  try {
+    await endActiveCallSession(payload.callId);
+  } catch (error) {
+    console.error("Failed to save ended call message", error);
+  }
+
+  removeFromSetMap(callRooms, payload.callId, socket);
+  socket.subscriptions.calls.delete(payload.callId);
+  broadcastPeerLeft({
+    callId: payload.callId,
+    userId: socket.userId,
+    callerId: activeCall?.callerId || pendingInvite?.callerId || null,
+    recipientId: activeCall?.recipientId || pendingInvite?.recipientId || null,
+    senderSocket: socket,
+  });
+};
+
+const websocketMessageHandlers = {
+  call_connected: handleCallConnected,
+  call_invite: handleCallInvite,
+  call_invite_response: handleCallInviteResponse,
+  call_signal: handleCallSignal,
+  chat_message: handleChatMessage,
+  join_call: handleJoinCall,
+  join_conversation: handleJoinConversation,
+  leave_call: handleLeaveCall,
+  mark_conversation_read: handleMarkConversationRead,
+  subscribe_presence: handleSubscribePresence,
+  typing_start: handleTypingState,
+  typing_stop: handleTypingState,
+};
+
+const handleWebSocketMessage = async (socket, rawData) => {
+  try {
+    const payload = JSON.parse(rawData.toString());
+    const handler = websocketMessageHandlers[payload.type];
+
+    if (!handler) {
+      sendJson(socket, { type: "error", message: "Unsupported websocket message type" });
+      return;
+    }
+
+    await handler(socket, payload);
+  } catch (error) {
+    console.error("WebSocket message error", error);
+    sendJson(socket, { type: "error", message: "Invalid websocket payload" });
+  }
+};
+
+const handleWebSocketClose = (socket) => {
+  const wasLastSocketForUser =
+    socket.userId && socketsByUserId.get(socket.userId)?.size === 1;
+
+  if (socket.userId) {
+    removeSocketForUser(socket.userId, socket);
+  }
+
+  for (const conversationId of socket.subscriptions.conversations) {
+    removeFromSetMap(conversationSubscribers, conversationId, socket);
+  }
+
+  for (const callId of socket.subscriptions.calls) {
+    removeFromSetMap(callRooms, callId, socket);
+    scheduleCallSocketLeave({ callId, userId: socket.userId });
+  }
+
+  for (const presenceUserId of socket.subscriptions.presenceUsers) {
+    removeFromSetMap(presenceSubscribers, presenceUserId, socket);
+  }
+
+  if (socket.userId && wasLastSocketForUser) {
+    broadcastPresenceUpdate(socket.userId, false);
+  }
+};
+
 app.use(
   cors({
     origin: CLIENT_URL,
@@ -388,313 +710,8 @@ wss.on("connection", (socket) => {
     presenceUsers: new Set(),
   };
 
-  socket.on("message", async (rawData) => {
-    try {
-      const payload = JSON.parse(rawData.toString());
-
-      switch (payload.type) {
-        case "join_conversation": {
-          if (!socket.userId || !payload.conversationId) return;
-          const readResult = await query(
-            `
-              INSERT INTO conversation_reads (user_id, conversation_id, last_read_at)
-              VALUES ($1, $2, NOW())
-              ON CONFLICT (user_id, conversation_id)
-              DO UPDATE SET last_read_at = EXCLUDED.last_read_at
-              RETURNING last_read_at
-            `,
-            [socket.userId, payload.conversationId]
-          );
-          socket.subscriptions.conversations.add(payload.conversationId);
-          joinSetMap(conversationSubscribers, payload.conversationId, socket);
-          sendJson(socket, { type: "joined_conversation", conversationId: payload.conversationId });
-          broadcastToConversation(payload.conversationId, {
-            type: "conversation_read",
-            conversationId: payload.conversationId,
-            userId: socket.userId,
-            lastReadAt: readResult.rows[0]?.last_read_at || new Date().toISOString(),
-          });
-          break;
-        }
-
-        case "subscribe_presence": {
-          if (!socket.userId) return;
-
-          const requestedUserIds = Array.isArray(payload.userIds)
-            ? [...new Set(payload.userIds.filter((userId) => typeof userId === "string"))]
-            : [];
-
-          replacePresenceSubscriptions(socket, requestedUserIds);
-
-          sendJson(socket, {
-            type: "presence_snapshot",
-            onlineUserIds: requestedUserIds.filter((userId) => socketsByUserId.has(userId)),
-          });
-          break;
-        }
-
-        case "mark_conversation_read": {
-          if (!socket.userId || !payload.conversationId) return;
-
-          const readResult = await query(
-            `
-              INSERT INTO conversation_reads (user_id, conversation_id, last_read_at)
-              VALUES ($1, $2, NOW())
-              ON CONFLICT (user_id, conversation_id)
-              DO UPDATE SET last_read_at = EXCLUDED.last_read_at
-              RETURNING last_read_at
-            `,
-            [socket.userId, payload.conversationId]
-          );
-
-          broadcastToConversation(payload.conversationId, {
-            type: "conversation_read",
-            conversationId: payload.conversationId,
-            userId: socket.userId,
-            lastReadAt: readResult.rows[0]?.last_read_at || new Date().toISOString(),
-          });
-          break;
-        }
-
-        case "typing_start":
-        case "typing_stop": {
-          if (!socket.userId || !payload.conversationId) return;
-
-          broadcastToConversation(payload.conversationId, {
-            type: payload.type,
-            conversationId: payload.conversationId,
-            userId: socket.userId,
-          });
-          break;
-        }
-
-        case "chat_message": {
-          const normalizedText = payload.text?.trim() || "";
-          const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
-          const hasAttachments = Array.isArray(metadata.attachments) && metadata.attachments.length > 0;
-
-          if (!socket.userId || !payload.recipientId || (!normalizedText && !hasAttachments)) return;
-
-          const conversationId = getConversationId(socket.userId, payload.recipientId);
-          const messageType = hasAttachments ? "attachment" : "text";
-          const savedMessage = await query(
-            `
-              INSERT INTO messages (id, conversation_id, sender_id, recipient_id, text, message_type, metadata)
-              VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-              RETURNING id, conversation_id, sender_id, recipient_id, text, message_type, metadata, created_at
-            `,
-            [
-              randomUUID(),
-              conversationId,
-              socket.userId,
-              payload.recipientId,
-              normalizedText,
-              messageType,
-              JSON.stringify(metadata),
-            ]
-          );
-
-          broadcastToConversation(conversationId, {
-            type: "chat_message",
-            message: serializeMessage(savedMessage.rows[0]),
-          });
-          break;
-        }
-
-        case "call_invite": {
-          if (!socket.userId || !payload.recipientId || !payload.callId) return;
-
-          const deliveredCount = broadcastToUser(payload.recipientId, {
-            type: "incoming_call_invite",
-            callId: payload.callId,
-            fromUserId: socket.userId,
-            fromUserName: socket.user?.fullName || "Someone",
-            fromUserProfilePic: socket.user?.profilePic || "/default-avatar.svg",
-            createdAt: new Date().toISOString(),
-          });
-
-          clearPendingCallInvite(payload.callId);
-          scheduleCallInviteTimeout({
-            callId: payload.callId,
-            callerId: socket.userId,
-            recipientId: payload.recipientId,
-          });
-
-          if (deliveredCount === 0) {
-            sendJson(socket, {
-              type: "call_invite_pending_offline",
-              callId: payload.callId,
-              recipientId: payload.recipientId,
-            });
-          }
-          break;
-        }
-
-        case "call_invite_response": {
-          if (!socket.userId || !payload.callId || !payload.recipientId) return;
-
-          const pendingInvite = clearPendingCallInvite(payload.callId);
-
-          if (payload.accepted) {
-            const callerId = pendingInvite?.callerId || payload.recipientId;
-            const recipientId = pendingInvite?.recipientId || socket.userId;
-
-            try {
-              activeCallSessions.set(payload.callId, {
-                callerId,
-                recipientId,
-                acceptedAt: Date.now(),
-                startedAt: null,
-                ended: false,
-              });
-            } catch (error) {
-              console.error("Failed to track active call session", error);
-            }
-          } else if (payload.reason === "declined") {
-            const callerId = pendingInvite?.callerId || payload.recipientId;
-            const recipientId = pendingInvite?.recipientId || socket.userId;
-
-            try {
-              await createMissedCallMessage({ callId: payload.callId, callerId, recipientId });
-            } catch (error) {
-              console.error("Failed to save declined call message", error);
-            }
-          }
-
-          broadcastToUser(payload.recipientId, {
-            type: "call_invite_response",
-            callId: payload.callId,
-            accepted: Boolean(payload.accepted),
-            recipientId: socket.userId,
-            responderName: socket.user?.fullName || "Someone",
-            reason: payload.reason || null,
-          });
-          break;
-        }
-
-        case "join_call": {
-          if (!socket.userId || !payload.callId) return;
-          const endedCallEvent = endedCallEvents.get(payload.callId);
-          const endedByOtherParticipant = getOtherCallParticipantId(endedCallEvent, socket.userId);
-
-          if (endedByOtherParticipant) {
-            sendJson(socket, {
-              type: "peer_left",
-              callId: payload.callId,
-              userId: endedCallEvent.userId,
-            });
-            break;
-          }
-
-          clearScheduledCallLeave(payload.callId, socket.userId);
-          socket.subscriptions.calls.add(payload.callId);
-          joinSetMap(callRooms, payload.callId, socket);
-          broadcastToCallRoom(payload.callId, socket, {
-            type: "peer_joined",
-            callId: payload.callId,
-            userId: socket.userId,
-          });
-          break;
-        }
-
-        case "call_signal": {
-          if (!socket.userId || !payload.callId || !payload.signal) return;
-          broadcastToCallRoom(payload.callId, socket, {
-            type: "call_signal",
-            callId: payload.callId,
-            userId: socket.userId,
-            signal: payload.signal,
-          });
-          break;
-        }
-
-        case "call_connected": {
-          if (!socket.userId || !payload.callId) return;
-
-          const activeCall = activeCallSessions.get(payload.callId);
-          if (activeCall && !activeCall.startedAt) {
-            activeCall.startedAt = Date.now();
-          }
-          break;
-        }
-
-        case "leave_call": {
-          if (!payload.callId) return;
-          const pendingInvite = pendingCallInvites.get(payload.callId);
-          const activeCall = activeCallSessions.get(payload.callId);
-          clearScheduledCallLeave(payload.callId, socket.userId);
-
-          if (pendingInvite && socket.userId === pendingInvite.callerId) {
-            clearPendingCallInvite(payload.callId);
-            try {
-              await createMissedCallMessage({
-                callId: payload.callId,
-                callerId: pendingInvite.callerId,
-                recipientId: pendingInvite.recipientId,
-              });
-            } catch (error) {
-              console.error("Failed to save missed call message after caller ended call", error);
-            }
-            broadcastToUser(pendingInvite.recipientId, {
-              type: "call_invite_cancelled",
-              callId: payload.callId,
-              callerId: pendingInvite.callerId,
-              recipientId: pendingInvite.recipientId,
-            });
-          }
-
-          try {
-            await endActiveCallSession(payload.callId);
-          } catch (error) {
-            console.error("Failed to save ended call message", error);
-          }
-
-          removeFromSetMap(callRooms, payload.callId, socket);
-          socket.subscriptions.calls.delete(payload.callId);
-          broadcastPeerLeft({
-            callId: payload.callId,
-            userId: socket.userId,
-            callerId: activeCall?.callerId || pendingInvite?.callerId || null,
-            recipientId: activeCall?.recipientId || pendingInvite?.recipientId || null,
-            senderSocket: socket,
-          });
-          break;
-        }
-
-        default:
-          sendJson(socket, { type: "error", message: "Unsupported websocket message type" });
-      }
-    } catch (error) {
-      console.error("WebSocket message error", error);
-      sendJson(socket, { type: "error", message: "Invalid websocket payload" });
-    }
-  });
-
-  socket.on("close", () => {
-    const wasLastSocketForUser =
-      socket.userId && socketsByUserId.get(socket.userId)?.size === 1;
-
-    if (socket.userId) {
-      removeSocketForUser(socket.userId, socket);
-    }
-
-    for (const conversationId of socket.subscriptions.conversations) {
-      removeFromSetMap(conversationSubscribers, conversationId, socket);
-    }
-
-    for (const callId of socket.subscriptions.calls) {
-      removeFromSetMap(callRooms, callId, socket);
-      scheduleCallSocketLeave({ callId, userId: socket.userId });
-    }
-
-    for (const presenceUserId of socket.subscriptions.presenceUsers) {
-      removeFromSetMap(presenceSubscribers, presenceUserId, socket);
-    }
-
-    if (socket.userId && wasLastSocketForUser) {
-      broadcastPresenceUpdate(socket.userId, false);
-    }
-  });
+  socket.on("message", (rawData) => handleWebSocketMessage(socket, rawData));
+  socket.on("close", () => handleWebSocketClose(socket));
 });
 
 server.on("upgrade", async (request, socket, head) => {

@@ -10,7 +10,7 @@ import {
     UsersIcon,
 } from "lucide-react";
 import AvatarImage from "./AvatarImage";
-import { useEffect, useState } from "react";
+import { createElement, useEffect, useState } from "react";
 import useUnreadNotificationCount from "../hooks/useUnreadNotificationCount";
 
 const sidebarItems = [
@@ -67,7 +67,7 @@ const Sidebar = () => {
             </div>
 
             <nav className={`flex-1 space-y-1 p-3 ${isCollapsed ? "px-3" : "px-4"}`}>
-                {sidebarItems.map(({ to, label, icon: Icon }) => {
+                {sidebarItems.map(({ to, label, icon }) => {
                     const showUnreadBadge = to === "/notifications" && unreadNotificationCount > 0;
 
                     return (
@@ -80,7 +80,9 @@ const Sidebar = () => {
                             isCollapsed ? "btn-circle justify-center px-0" : "justify-start px-3"
                         } ${currentPath === to ? "btn-active" : ""}`}
                     >
-                        <Icon className="size-5 shrink-0 text-base-content opacity-70" />
+                        {createElement(icon, {
+                            className: "size-5 shrink-0 text-base-content opacity-70",
+                        })}
                         {!isCollapsed ? <span className="truncate">{label}</span> : null}
                         {showUnreadBadge ? (
                             <span

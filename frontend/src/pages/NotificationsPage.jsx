@@ -107,8 +107,14 @@ const NotificationsPage = () => {
     },
   });
 
-  const incomingRequests = friendRequests?.incomingReqs || [];
-  const acceptedRequests = friendRequests?.acceptedReqs || [];
+  const incomingRequests = useMemo(
+    () => friendRequests?.incomingReqs || [],
+    [friendRequests?.incomingReqs]
+  );
+  const acceptedRequests = useMemo(
+    () => friendRequests?.acceptedReqs || [],
+    [friendRequests?.acceptedReqs]
+  );
   const normalizedSearchTerm = searchTerm.trim().toLowerCase();
 
   useEffect(() => {
