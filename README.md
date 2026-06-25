@@ -27,7 +27,16 @@ HF_NSFW_MODEL=Falconsai/nsfw_image_detection
 HF_TEXT_MODERATION_MODEL=facebook/roberta-hate-speech-dynabench-r4-target
 HF_AI_IMAGE_MODEL=prithivMLmods/deepfake-detector-model-v1
 GOOGLE_SAFE_BROWSING_API_KEY=google_safe_browsing_api
+
+#email OTP registration settings
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=your-email-app-password
 ```
+
+If you use Gmail for OTP delivery, generate a Gmail App Password and set it in `SMTP_PASS`.
 
 ### Frontend (`/frontend`)
 

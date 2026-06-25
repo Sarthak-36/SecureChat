@@ -113,17 +113,29 @@ const LoginPage = () => {
           </div>
         </div>
 
-        {/* IMAGE SECTION */}
-        <div className="hidden lg:flex w-full lg:w-1/2 bg-primary/10 items-center justify-center">
-          <div className="max-w-md p-8">
-            {/* Illustration */}
-            <div className="relative aspect-square max-w-sm mx-auto">
-              <img src="/i.png" alt="Language connection illustration" className="w-full h-full" />
+        <div className="hidden lg:flex w-full lg:w-1/2 bg-gradient-to-br from-primary to-secondary text-white p-10 items-center justify-center">
+          <div className="max-w-md space-y-6">
+            <div>
+              <p className="text-sm uppercase tracking-[0.3em] opacity-80">SecureChat</p>
+              <h2 className="mt-3 text-3xl font-bold">Your private community starts here</h2>
+              <p className="mt-4 text-sm opacity-90">
+                Sign in for fast, secure conversations and stay connected with friends in one modern chat app.
+              </p>
             </div>
 
-            <div className="text-center space-y-3 mt-6">
-              <h2 className="text-xl font-semibold">Meet new people and stay connected</h2>
-              <p className="opacity-70">Build friendships, send requests, and chat in real time.</p>
+            <div className="space-y-4">
+              <div className="rounded-3xl bg-white/10 p-5 border border-white/10">
+                <p className="font-semibold">Real-time messaging</p>
+                <p className="text-sm opacity-80">Send messages instantly and keep your chats flowing.</p>
+              </div>
+              <div className="rounded-3xl bg-white/10 p-5 border border-white/10">
+                <p className="font-semibold">Secure onboarding</p>
+                <p className="text-sm opacity-80">Protected access with strong credentials and profile privacy.</p>
+              </div>
+              <div className="rounded-3xl bg-white/10 p-5 border border-white/10">
+                <p className="font-semibold">Friendly experience</p>
+                <p className="text-sm opacity-80">A clean layout designed for easy sign-in and fast access.</p>
+              </div>
             </div>
           </div>
         </div>

@@ -18,6 +18,22 @@ const schemaQueries = [
     );
   `,
   `
+    CREATE TABLE IF NOT EXISTS registration_otps (
+      id UUID PRIMARY KEY,
+      email TEXT NOT NULL,
+      full_name TEXT NOT NULL,
+      password TEXT NOT NULL,
+      otp TEXT NOT NULL,
+      used BOOLEAN NOT NULL DEFAULT FALSE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS idx_registration_otps_email
+    ON registration_otps (email);
+  `,
+  `
     CREATE TABLE IF NOT EXISTS friendships (
       user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       friend_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
