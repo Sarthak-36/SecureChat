@@ -688,7 +688,8 @@ const handleWebSocketClose = (socket) => {
 
 app.use(
   cors({
-    origin: CLIENT_URL,
+    // origin: CLIENT_URL,
+    origin: true,
     credentials: true,
   })
 );
