@@ -4,9 +4,11 @@ import {
   login,
   logout,
   onboard,
+  requestSignupOtp,
   signup,
   updateProfile,
   uploadProfilePicture,
+  verifySignupOtp,
 } from "../controllers/auth.controller.js";
 import { protectRoute } from "../middleware/auth.middleware.js";
 import { uploadProfileImage } from "../middleware/upload.middleware.js";
@@ -14,6 +16,8 @@ import { uploadProfileImage } from "../middleware/upload.middleware.js";
 const router = express.Router();
 
 router.post("/signup", signup);
+router.post("/signup/request-otp", requestSignupOtp);
+router.post("/signup/verify-otp", verifySignupOtp);
 router.post("/login", login);
 router.post("/logout", logout);
 

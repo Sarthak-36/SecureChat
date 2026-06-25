@@ -1,30 +1,30 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowDownIcon, ImagePlusIcon, MessageSquareTextIcon, VideoIcon } from "lucide-react";
 import toast from "react-hot-toast";
+import { v4 as uuidv4 } from "uuid";
 
 import AIDetectionModal from "../components/AIDetectionModal";
+import AvatarImage from "../components/AvatarImage";
 import ChatLoader from "../components/ChatLoader";
 import ChatHeader from "../components/chat/ChatHeader";
 import ChatMessageItem from "../components/chat/ChatMessageItem";
 import MessageComposer from "../components/chat/MessageComposer";
 import TypingIndicator from "../components/chat/TypingIndicator";
 import useAuthUser from "../hooks/useAuthUser";
+import useChatScroll from "../hooks/useChatScroll";
+import useMessageSearch from "../hooks/useMessageSearch";
+import useMessageAiActions from "../hooks/useMessageAiActions";
+import usePendingAttachments from "../hooks/usePendingAttachments";
 import {
   clearConversation,
-  describeImageMessage,
   deleteMessage,
-  detectImageMessage,
-  detectLinkMessage,
-  detectTextMessage,
   getChatToken,
   getMessages,
   getUserFriends,
   hideMessageForMe,
   removeFriend,
-  summarizeMessage,
-  translateMessageToEnglish,
-  uploadChatAttachment,
 } from "../lib/api";
 import { getWebSocketUrl } from "../lib/realtime";
 
@@ -32,10 +32,16 @@ const buildReplyPayload = (message) => ({
   messageId: message._id,
   senderId: message.senderId,
   text: message.text || "",
-  attachment: message.metadata?.attachments?.[0]
+  attachment: message.metadata?.attachments?.length
     ? {
-        name: message.metadata.attachments[0].name,
-        type: message.metadata.attachments[0].type,
+        name:
+          message.metadata.attachments.length > 1
+            ? `${message.metadata.attachments.length} attachments`
+            : message.metadata.attachments[0].name,
+        type:
+          message.metadata.attachments.length > 1
+            ? "file"
+            : message.metadata.attachments[0].type,
       }
     : null,
 });
@@ -53,11 +59,103 @@ const getLatestReadAt = (messageHistory) => {
   return latestReadAt;
 };
 
+const getMessageDateKey = (timestamp) => {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "unknown";
+
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+};
+
+const getMessageDateLabel = (timestamp) => {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "Unknown date";
+
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+
+  if (getMessageDateKey(timestamp) === getMessageDateKey(today)) return "Today";
+  if (getMessageDateKey(timestamp) === getMessageDateKey(yesterday)) return "Yesterday";
+
+  return date.toLocaleDateString([], {
+    day: "numeric",
+    month: "short",
+    year: date.getFullYear() === today.getFullYear() ? undefined : "numeric",
+  });
+};
+
+const ChatDateSeparator = ({ timestamp }) => (
+  <div className="flex items-center justify-center py-3">
+    <div className="flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-base-content/50">
+      <span className="h-px w-10 bg-base-content/10 sm:w-16" />
+      <span className="rounded-full border border-base-content/10 bg-base-100/90 px-3 py-1 shadow-sm backdrop-blur">
+        {getMessageDateLabel(timestamp)}
+      </span>
+      <span className="h-px w-10 bg-base-content/10 sm:w-16" />
+    </div>
+  </div>
+);
+
+const NewMessagesSeparator = () => (
+  <div className="flex items-center justify-center py-3">
+    <div className="flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-primary">
+      <span className="h-px w-12 bg-primary/30 sm:w-20" />
+      <span className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1 shadow-sm backdrop-blur">
+        New messages
+      </span>
+      <span className="h-px w-12 bg-primary/30 sm:w-20" />
+    </div>
+  </div>
+);
+
+const ChatEmptyState = ({ isOnline, onAttachFile, onSayHi, onStartCall, targetUser }) => (
+  <div className="flex min-h-[calc(100vh-18rem)] items-center justify-center px-2 py-10">
+    <div className="flex w-full max-w-lg flex-col items-center text-center">
+      <div className="avatar">
+        <div className="w-20 rounded-full ring ring-base-300 ring-offset-4 ring-offset-base-100 sm:w-24">
+          <AvatarImage
+            src={targetUser?.profilePic}
+            name={targetUser?.fullName}
+            alt={targetUser?.fullName || "Friend"}
+            className="h-full w-full object-cover"
+          />
+        </div>
+      </div>
+
+      <div className="mt-5 space-y-2">
+        <div className="flex items-center justify-center gap-2">
+          <h2 className="text-xl font-semibold sm:text-2xl">
+            {targetUser?.fullName || "This conversation"}
+          </h2>
+          <span className={`size-2.5 rounded-full ${isOnline ? "bg-success" : "bg-base-content/30"}`} />
+        </div>
+        <p className="mx-auto max-w-sm text-sm leading-6 opacity-70 sm:text-base">
+          Start a secure conversation with {targetUser?.fullName || "your friend"}.
+        </p>
+      </div>
+
+      <div className="mt-6 flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+        <button type="button" className="btn btn-primary sm:min-w-28" onClick={onSayHi}>
+          <MessageSquareTextIcon className="size-4" />
+          Say hi
+        </button>
+        <button type="button" className="btn btn-outline sm:min-w-28" onClick={onAttachFile}>
+          <ImagePlusIcon className="size-4" />
+          Attach
+        </button>
+        <button type="button" className="btn btn-ghost sm:min-w-28" onClick={onStartCall}>
+          <VideoIcon className="size-4" />
+          Call
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
 const ChatPage = () => {
   const { id: targetUserId } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const messagesEndRef = useRef(null);
   const messageNodesRef = useRef({});
   const socketRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -68,26 +166,14 @@ const ChatPage = () => {
   const [messages, setMessages] = useState([]);
   const [messageText, setMessageText] = useState("");
   const [socketReady, setSocketReady] = useState(false);
-  const [pendingAttachment, setPendingAttachment] = useState(null);
-  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
-  const [aiDetectionResult, setAiDetectionResult] = useState(null);
-  const [detectingMessageId, setDetectingMessageId] = useState(null);
-  const [checkingLinkMessageId, setCheckingLinkMessageId] = useState(null);
-  const [summarizingMessageId, setSummarizingMessageId] = useState(null);
-  const [describingImageMessageId, setDescribingImageMessageId] = useState(null);
-  const [isRecheckingDetection, setIsRecheckingDetection] = useState(false);
-  const [messageSearch, setMessageSearch] = useState("");
-  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [replyingTo, setReplyingTo] = useState(null);
   const [typingUserId, setTypingUserId] = useState(null);
   const [targetUserReadAt, setTargetUserReadAt] = useState(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState(null);
   const [isTargetUserOnline, setIsTargetUserOnline] = useState(false);
-  const [translatedMessages, setTranslatedMessages] = useState({});
-  const [translatingMessageId, setTranslatingMessageId] = useState(null);
-  const [activeSearchMatchIndex, setActiveSearchMatchIndex] = useState(0);
 
   const { authUser } = useAuthUser();
+  const clearReply = useCallback(() => setReplyingTo(null), []);
 
   const conversationId = useMemo(() => {
     if (!authUser?._id || !targetUserId) return null;
@@ -113,18 +199,75 @@ const ChatPage = () => {
   });
 
   const targetUser = friends.find((friend) => friend._id === targetUserId);
-  const normalizedMessageSearch = messageSearch.trim().toLowerCase();
-
-  const matchingMessageIds = useMemo(() => {
-    if (!normalizedMessageSearch) return [];
-
-    return messages
-      .filter((message) => message.text?.toLowerCase().includes(normalizedMessageSearch))
-      .map((message) => message._id);
-  }, [messages, normalizedMessageSearch]);
-
-  const matchingMessageCount = matchingMessageIds.length;
-  const activeSearchMessageId = matchingMessageIds[activeSearchMatchIndex] || null;
+  const {
+    clearPendingAttachments,
+    handleAttachmentSelect,
+    handleChatDragEnter,
+    handleChatDragLeave,
+    handleChatDragOver,
+    handleChatDrop,
+    handleComposerPaste,
+    handleRemovePendingAttachment,
+    isDraggingFiles,
+    isUploadingAttachment,
+    pendingAttachments,
+    uploadPendingAttachments,
+  } = usePendingAttachments({ inputRef: messageInputRef });
+  const {
+    activeSearchMatchIndex,
+    activeSearchMessageId,
+    handleJumpToNextSearchMatch,
+    handleJumpToPreviousSearchMatch,
+    handleSearchChange,
+    isSearchExpanded,
+    matchingMessageCount,
+    messageSearch,
+    normalizedMessageSearch,
+    searchInputRef,
+    setIsSearchExpanded,
+  } = useMessageSearch({
+    clearReply,
+    inputRef: messageInputRef,
+    messageNodesRef,
+    messages,
+    replyingTo,
+  });
+  const {
+    chatScrollRef,
+    firstNewMessageId,
+    messagesEndRef,
+    newIncomingMessageCount,
+    noteIncomingMessage,
+    scrollToFirstNewMessage,
+    scrollToLatestMessage,
+    showScrollToBottom,
+    updateScrollToBottomVisibility,
+  } = useChatScroll({
+    authUserId: authUser?._id,
+    messageNodesRef,
+    messages,
+    typingUserId,
+  });
+  const {
+    aiDetectionResult,
+    aiMessageStatuses,
+    checkingLinkMessageId,
+    describingImageMessageId,
+    detectingMessageId,
+    handleDescribeImageMessage,
+    handleRecheckDetection,
+    handleRetryTranslation,
+    handleSummarizeMessage,
+    handleTranslateMessage,
+    isRecheckingDetection,
+    resetMessageAiState,
+    runDetectionForMessage,
+    runLinkCheckForMessage,
+    setAiDetectionResult,
+    summarizingMessageId,
+    translatedMessages,
+    translatingMessageId,
+  } = useMessageAiActions({ messages });
 
   const { mutate: deleteMessageMutation } = useMutation({
     mutationFn: deleteMessage,
@@ -178,35 +321,11 @@ const ChatPage = () => {
     },
   });
 
-  const { mutateAsync: detectImageMutation } = useMutation({
-    mutationFn: ({ messageId, force }) => detectImageMessage(messageId, { force }),
-  });
-
-  const { mutateAsync: detectTextMutation } = useMutation({
-    mutationFn: ({ messageId, force }) => detectTextMessage(messageId, { force }),
-  });
-
-  const { mutateAsync: detectLinkMutation } = useMutation({
-    mutationFn: ({ messageId, force }) => detectLinkMessage(messageId, { force }),
-  });
-
-  const { mutateAsync: translateMessageMutation } = useMutation({
-    mutationFn: ({ messageId, force }) => translateMessageToEnglish(messageId, { force }),
-  });
-
-  const { mutateAsync: summarizeMessageMutation } = useMutation({
-    mutationFn: ({ messageId, force }) => summarizeMessage(messageId, { force }),
-  });
-
-  const { mutateAsync: describeImageMessageMutation } = useMutation({
-    mutationFn: ({ messageId, force }) => describeImageMessage(messageId, { force }),
-  });
-
   useEffect(() => {
     setMessages(history);
     setTargetUserReadAt(getLatestReadAt(history));
-    setTranslatedMessages({});
-  }, [history]);
+    resetMessageAiState();
+  }, [history, resetMessageAiState]);
 
   useEffect(() => {
     if (!tokenData?.token || !conversationId || !authUser?._id) return;
@@ -259,6 +378,7 @@ const ChatPage = () => {
 
         if (payload.message.senderId === targetUserId) {
           setTypingUserId(null);
+          noteIncomingMessage(payload.message._id);
           if (document.visibilityState === "visible") {
             markConversationRead();
           }
@@ -336,51 +456,37 @@ const ChatPage = () => {
 
       socket.close();
     };
-  }, [authUser?._id, conversationId, queryClient, targetUserId, tokenData?.token]);
+  }, [authUser?._id, conversationId, noteIncomingMessage, queryClient, targetUserId, tokenData?.token]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, typingUserId]);
+    const canAutoFocusComposer =
+      typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches;
 
-  useEffect(() => {
-    if (isSearchExpanded) return;
-    setMessageSearch("");
-    setActiveSearchMatchIndex(0);
-  }, [isSearchExpanded]);
+    if (!canAutoFocusComposer || isSearchExpanded) return;
 
-  useEffect(() => {
-    setActiveSearchMatchIndex(0);
-  }, [normalizedMessageSearch]);
+    const focusTimer = window.setTimeout(() => {
+      messageInputRef.current?.focus({ preventScroll: true });
+    }, 120);
 
-  useEffect(() => {
-    if (!matchingMessageCount) {
-      setActiveSearchMatchIndex(0);
-      return;
-    }
+    return () => {
+      window.clearTimeout(focusTimer);
+    };
+  }, [isSearchExpanded, targetUserId]);
 
-    setActiveSearchMatchIndex((currentIndex) => {
-      if (currentIndex < matchingMessageCount) {
-        return currentIndex;
-      }
-
-      return matchingMessageCount - 1;
-    });
-  }, [matchingMessageCount]);
-
-  useEffect(() => {
-    if (!activeSearchMessageId) return;
-
-    const targetNode = messageNodesRef.current[activeSearchMessageId];
-    if (!targetNode) return;
-
-    targetNode.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [activeSearchMessageId]);
+  const lastMessageIdRef = useRef(null);
 
   useEffect(() => {
     if (!socketReady || !conversationId || !authUser?._id) return;
 
     const latestMessage = messages[messages.length - 1];
-    if (latestMessage && latestMessage.senderId === targetUserId && document.visibilityState === "visible") {
+    if (!latestMessage) return;
+
+    // prevent infinite loop
+    if (lastMessageIdRef.current === latestMessage._id) return;
+
+    lastMessageIdRef.current = latestMessage._id;
+
+    if (latestMessage.senderId === targetUserId && document.visibilityState === "visible") {
       socketRef.current?.send(
         JSON.stringify({
           type: "mark_conversation_read",
@@ -388,7 +494,7 @@ const ChatPage = () => {
         })
       );
     }
-  }, [authUser?._id, conversationId, messages, socketReady, targetUserId]);
+  }, [messages, socketReady, conversationId, authUser?._id, targetUserId]);
 
   const sendTypingState = (type) => {
     if (!socketReady || !socketRef.current || !conversationId) return;
@@ -440,45 +546,6 @@ const ChatPage = () => {
     scheduleTypingStop();
   };
 
-  const handleAttachmentSelect = async (event) => {
-    const selectedFile = event.target.files?.[0];
-    if (!selectedFile) return;
-
-    setIsUploadingAttachment(true);
-
-    try {
-      const response = await uploadChatAttachment(selectedFile);
-      setPendingAttachment(response.attachment);
-      toast.success("Attachment uploaded");
-      window.requestAnimationFrame(() => {
-        messageInputRef.current?.focus();
-      });
-    } catch (error) {
-      toast.error(error?.response?.data?.message || "Could not upload attachment");
-    } finally {
-      setIsUploadingAttachment(false);
-      event.target.value = "";
-    }
-  };
-
-  const handleSearchChange = (event) => {
-    setMessageSearch(event.target.value);
-  };
-
-  const handleJumpToNextSearchMatch = () => {
-    if (!matchingMessageCount) return;
-
-    setActiveSearchMatchIndex((currentIndex) => (currentIndex + 1) % matchingMessageCount);
-  };
-
-  const handleJumpToPreviousSearchMatch = () => {
-    if (!matchingMessageCount) return;
-
-    setActiveSearchMatchIndex((currentIndex) =>
-      currentIndex === 0 ? matchingMessageCount - 1 : currentIndex - 1
-    );
-  };
-
   const handleComposerKeyDown = (event) => {
     if (event.key !== "Enter" || event.shiftKey) {
       return;
@@ -487,7 +554,7 @@ const ChatPage = () => {
     event.preventDefault();
 
     const trimmedText = messageText.trim();
-    if (!trimmedText && !pendingAttachment) {
+    if (!trimmedText && pendingAttachments.length === 0) {
       return;
     }
 
@@ -526,33 +593,66 @@ const ChatPage = () => {
     });
   };
 
-  const handleSendMessage = (event) => {
+  const handlePrefillGreeting = () => {
+    setMessageText((currentText) => currentText || `Hi ${targetUser?.fullName || "there"}!`);
+    window.requestAnimationFrame(() => {
+      messageInputRef.current?.focus({ preventScroll: true });
+    });
+  };
+
+  const handleSendMessage = async (event) => {
     event.preventDefault();
 
-    if (!socketReady || !socketRef.current) return;
+    if (!socketReady || !socketRef.current || isUploadingAttachment) return;
 
     const trimmedText = messageText.trim();
-    if (!trimmedText && !pendingAttachment) return;
+    if (!trimmedText && pendingAttachments.length === 0) return;
 
-    const metadata = {};
-    if (pendingAttachment) {
-      metadata.attachments = [pendingAttachment];
-    }
-    if (replyingTo) {
-      metadata.replyTo = replyingTo;
+    let uploadedAttachments = [];
+
+    if (pendingAttachments.length > 0) {
+      try {
+        uploadedAttachments = await uploadPendingAttachments();
+      } catch (error) {
+        toast.error(error?.response?.data?.message || "Could not upload attachment");
+        return;
+      }
     }
 
-    socketRef.current.send(
-      JSON.stringify({
-        type: "chat_message",
-        recipientId: targetUserId,
-        text: trimmedText,
-        metadata,
-      })
-    );
+    const sendChatPayload = ({ text = "", attachment = null, includeReply = false }) => {
+      const metadata = {};
+
+      if (attachment) {
+        metadata.attachments = [attachment];
+      }
+
+      if (includeReply && replyingTo) {
+        metadata.replyTo = replyingTo;
+      }
+
+      socketRef.current.send(
+        JSON.stringify({
+          type: "chat_message",
+          recipientId: targetUserId,
+          text,
+          metadata,
+        })
+      );
+    };
+
+    if (trimmedText) {
+      sendChatPayload({ text: trimmedText, includeReply: true });
+      uploadedAttachments.forEach((attachment) => {
+        sendChatPayload({ attachment });
+      });
+    } else {
+      uploadedAttachments.forEach((attachment, index) => {
+        sendChatPayload({ attachment, includeReply: index === 0 });
+      });
+    }
 
     setMessageText("");
-    setPendingAttachment(null);
+    clearPendingAttachments();
     setReplyingTo(null);
     stopTyping();
     queryClient.invalidateQueries({ queryKey: ["friends"] });
@@ -564,7 +664,8 @@ const ChatPage = () => {
       return;
     }
 
-    const callId = crypto.randomUUID();
+    const callId = uuidv4();
+
     socketRef.current.send(
       JSON.stringify({
         type: "call_invite",
@@ -573,204 +674,16 @@ const ChatPage = () => {
       })
     );
 
+    const callParams = new URLSearchParams({
+      mode: "outgoing",
+      peer: targetUserId,
+      peerName: targetUser?.fullName || "Friend",
+      peerPic: targetUser?.profilePic || "/default-avatar.svg",
+      returnTo: `/chat/${targetUserId}`,
+    });
+
     toast.success(`Calling ${targetUser?.fullName || "your friend"}...`);
-    navigate(`/call/${callId}?mode=outgoing&peer=${targetUserId}`);
-  };
-
-  const runDetectionForMessage = async (message, { force = false } = {}) => {
-    const attachment = message.metadata?.attachments?.[0];
-    const text = message.text?.trim();
-
-    if (attachment?.type === "image") {
-      setDetectingMessageId(message._id);
-
-      try {
-        const result = await detectImageMutation({ messageId: message._id, force });
-        setAiDetectionResult(result);
-        toast.success(
-          force
-            ? "AI image detection refreshed"
-            : result.cached
-              ? "Showing saved AI result"
-              : "AI image detection complete"
-        );
-      } catch (error) {
-        toast.error(error?.response?.data?.message || "Could not run AI detection");
-      } finally {
-        setDetectingMessageId(null);
-      }
-      return;
-    }
-
-    if (!text) {
-      toast.error("AI detection currently supports image or text messages");
-      return;
-    }
-
-    setDetectingMessageId(message._id);
-
-    try {
-      const result = await detectTextMutation({ messageId: message._id, force });
-      setAiDetectionResult(result);
-      toast.success(
-        force
-          ? "AI text detection refreshed"
-          : result.cached
-            ? "Showing saved AI result"
-            : "AI text detection complete"
-      );
-    } catch (error) {
-      toast.error(error?.response?.data?.message || "Could not run AI detection");
-    } finally {
-      setDetectingMessageId(null);
-    }
-  };
-
-  const runLinkCheckForMessage = async (message, { force = false } = {}) => {
-    const text = message.text?.trim();
-
-    if (!text || !/(https?:\/\/|www\.)/i.test(text)) {
-      toast.error("Suspicious link check needs a message with at least one link");
-      return;
-    }
-
-    setCheckingLinkMessageId(message._id);
-
-    try {
-      const result = await detectLinkMutation({ messageId: message._id, force });
-      setAiDetectionResult(result);
-      toast.success(
-        force
-          ? "Suspicious link check refreshed"
-          : result.cached
-            ? "Showing saved link safety result"
-            : "Suspicious link check complete"
-      );
-    } catch (error) {
-      toast.error(error?.response?.data?.message || "Could not check the link");
-    } finally {
-      setCheckingLinkMessageId(null);
-    }
-  };
-
-  const handleTranslateMessage = async (message, { force = false } = {}) => {
-    const text = message.text?.trim();
-    if (!text) {
-      toast.error("Translation only supports text messages");
-      return;
-    }
-
-    setTranslatingMessageId(message._id);
-
-    try {
-      const result = await translateMessageMutation({ messageId: message._id, force });
-      setTranslatedMessages((currentTranslations) => ({
-        ...currentTranslations,
-        [message._id]: result,
-      }));
-      const translationToastMessages = {
-        reused: "Showing saved translation",
-        refreshed: "Translation refreshed",
-        fresh: "Translated to English",
-      };
-      toast.success(
-        translationToastMessages[result.cacheStatus] ||
-          (force ? "Translation refreshed" : result.cached ? "Showing saved translation" : "Translated to English")
-      );
-    } catch (error) {
-      toast.error(error?.response?.data?.message || "Could not translate this message");
-    } finally {
-      setTranslatingMessageId(null);
-    }
-  };
-
-  const handleRetryTranslation = (message) => {
-    handleTranslateMessage(message, { force: true });
-  };
-
-  const handleSummarizeMessage = async (message, { force = false } = {}) => {
-    const text = message.text?.trim();
-    if (!text) {
-      toast.error("Summarization only supports text messages");
-      return;
-    }
-
-    setSummarizingMessageId(message._id);
-
-    try {
-      const result = await summarizeMessageMutation({ messageId: message._id, force });
-      setAiDetectionResult(result);
-      toast.success(
-        force
-          ? "Summary refreshed"
-          : result.cached
-            ? "Showing saved summary"
-            : "Summary ready"
-      );
-    } catch (error) {
-      toast.error(error?.response?.data?.message || "Could not summarize this message");
-    } finally {
-      setSummarizingMessageId(null);
-    }
-  };
-
-  const handleDescribeImageMessage = async (message, { force = false } = {}) => {
-    const attachment = message.metadata?.attachments?.[0];
-    if (attachment?.type !== "image") {
-      toast.error("Image description only supports image attachments");
-      return;
-    }
-
-    setDescribingImageMessageId(message._id);
-
-    try {
-      const result = await describeImageMessageMutation({ messageId: message._id, force });
-      setAiDetectionResult(result);
-      toast.success(
-        force
-          ? "Image description refreshed"
-          : result.cached
-            ? "Showing saved image description"
-            : "Image description ready"
-      );
-    } catch (error) {
-      toast.error(error?.response?.data?.message || "Could not describe this image");
-    } finally {
-      setDescribingImageMessageId(null);
-    }
-  };
-
-  const handleRecheckDetection = async () => {
-    if (!aiDetectionResult?.messageId) return;
-
-    const message = messages.find((currentMessage) => currentMessage._id === aiDetectionResult.messageId);
-    if (!message) {
-      toast.error("Message could not be found for recheck");
-      return;
-    }
-
-    setIsRecheckingDetection(true);
-
-    try {
-      if (aiDetectionResult.checkType === "link") {
-        await runLinkCheckForMessage(message, { force: true });
-        return;
-      }
-
-      if (aiDetectionResult.checkType === "summarize") {
-        await handleSummarizeMessage(message, { force: true });
-        return;
-      }
-
-      if (aiDetectionResult.checkType === "describe_image") {
-        await handleDescribeImageMessage(message, { force: true });
-        return;
-      }
-
-      await runDetectionForMessage(message, { force: true });
-    } finally {
-      setIsRecheckingDetection(false);
-    }
+    navigate(`/call/${callId}?${callParams.toString()}`);
   };
 
   const handleClearConversation = () => {
@@ -792,7 +705,13 @@ const ChatPage = () => {
   }
 
   return (
-    <div className="h-[93vh] flex flex-col bg-base-100">
+    <div
+      className="relative flex h-full min-h-0 flex-col bg-base-100"
+      onDragEnter={handleChatDragEnter}
+      onDragLeave={handleChatDragLeave}
+      onDragOver={handleChatDragOver}
+      onDrop={handleChatDrop}
+    >
       <AIDetectionModal
         result={aiDetectionResult}
         isRechecking={isRecheckingDetection}
@@ -809,6 +728,7 @@ const ChatPage = () => {
         activeSearchMatchIndex={activeSearchMatchIndex}
         matchingMessageCount={matchingMessageCount}
         messageSearch={messageSearch}
+        searchInputRef={searchInputRef}
         normalizedMessageSearch={normalizedMessageSearch}
         onChangeSearch={handleSearchChange}
         onClearConversation={handleClearConversation}
@@ -821,39 +741,91 @@ const ChatPage = () => {
         targetUser={targetUser}
       />
 
-      <div className="flex-1 overflow-y-auto px-4 py-5">
-        <div className="mx-auto max-w-4xl space-y-3">
-          {messages.map((message) => (
-            <ChatMessageItem
-              key={message._id}
-              authUserId={authUser._id}
-              checkingLinkMessageId={checkingLinkMessageId}
-              describingImageMessageId={describingImageMessageId}
-              detectingMessageId={detectingMessageId}
-              isActiveSearchMatch={activeSearchMessageId === message._id}
-              isHighlighted={highlightedMessageId === message._id}
-              isRunningSummarize={summarizingMessageId === message._id}
-              isRunningTranslation={translatingMessageId === message._id}
-              message={message}
-              onDeleteForEveryone={deleteMessageMutation}
-              onDeleteForMe={hideMessageMutation}
-              onDescribeImage={handleDescribeImageMessage}
-              onJumpToReply={handleJumpToMessage}
-              onReply={handleReplyToMessage}
-              onRunDetection={runDetectionForMessage}
-              onRunLinkCheck={runLinkCheckForMessage}
-              onRetryTranslation={handleRetryTranslation}
-              onSummarize={handleSummarizeMessage}
-              onTranslate={handleTranslateMessage}
-              readAt={targetUserReadAt}
-              registerMessageNode={registerMessageNode}
-              searchTerm={normalizedMessageSearch}
-              translationResult={translatedMessages[message._id]}
+      <div
+        ref={chatScrollRef}
+        className="chat-thread-surface relative min-h-0 flex-1 overflow-y-auto px-4 py-5"
+        onScroll={updateScrollToBottomVisibility}
+      >
+        <div className="mx-auto max-w-4xl space-y-1.5">
+          {messages.length === 0 ? (
+            <ChatEmptyState
+              isOnline={isTargetUserOnline}
+              onAttachFile={() => fileInputRef.current?.click()}
+              onSayHi={handlePrefillGreeting}
+              onStartCall={handleVideoCall}
+              targetUser={targetUser}
             />
-          ))}
+          ) : (
+            messages.map((message, index) => {
+              const previousMessage = messages[index - 1];
+              const shouldShowDateSeparator =
+                !previousMessage ||
+                getMessageDateKey(previousMessage.createdAt) !== getMessageDateKey(message.createdAt);
+              const shouldShowNewMessagesSeparator = firstNewMessageId === message._id;
+
+              return (
+                <div key={message._id} className="space-y-1.5">
+                  {shouldShowDateSeparator ? <ChatDateSeparator timestamp={message.createdAt} /> : null}
+                  {shouldShowNewMessagesSeparator ? <NewMessagesSeparator /> : null}
+                  <ChatMessageItem
+                    authUserId={authUser._id}
+                    checkingLinkMessageId={checkingLinkMessageId}
+                    describingImageMessageId={describingImageMessageId}
+                    detectingMessageId={detectingMessageId}
+                    isActiveSearchMatch={activeSearchMessageId === message._id}
+                    isHighlighted={highlightedMessageId === message._id}
+                    isRunningSummarize={summarizingMessageId === message._id}
+                    isRunningTranslation={translatingMessageId === message._id}
+                    aiStatus={aiMessageStatuses[message._id]}
+                    message={message}
+                    onDeleteForEveryone={deleteMessageMutation}
+                    onDeleteForMe={hideMessageMutation}
+                    onDescribeImage={handleDescribeImageMessage}
+                    onJumpToReply={handleJumpToMessage}
+                    onReply={handleReplyToMessage}
+                    onRunDetection={runDetectionForMessage}
+                    onRunLinkCheck={runLinkCheckForMessage}
+                    onRetryTranslation={handleRetryTranslation}
+                    onSummarize={handleSummarizeMessage}
+                    onTranslate={handleTranslateMessage}
+                    readAt={targetUserReadAt}
+                    registerMessageNode={registerMessageNode}
+                    searchTerm={normalizedMessageSearch}
+                    translationResult={translatedMessages[message._id]}
+                  />
+                </div>
+              );
+            })
+          )}
           {typingUserId === targetUserId ? <TypingIndicator name={targetUser?.fullName} /> : null}
           <div ref={messagesEndRef} />
         </div>
+        {showScrollToBottom || newIncomingMessageCount > 0 ? (
+          <div className="sticky bottom-3 z-20 mt-3 flex justify-end">
+            <div className="flex flex-col items-end gap-2">
+              {newIncomingMessageCount > 0 ? (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm rounded-full shadow-lg"
+                  onClick={scrollToFirstNewMessage}
+                >
+                  {newIncomingMessageCount} new message{newIncomingMessageCount === 1 ? "" : "s"}
+                </button>
+              ) : null}
+              {showScrollToBottom ? (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-circle btn-sm shadow-lg"
+                  onClick={scrollToLatestMessage}
+                  aria-label="Jump to latest message"
+                  title="Jump to latest message"
+                >
+                  <ArrowDownIcon className="size-4" />
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <MessageComposer
@@ -864,15 +836,26 @@ const ChatPage = () => {
         messageText={messageText}
         onAttachmentSelect={handleAttachmentSelect}
         onChangeMessageText={handleMessageTextChange}
-        onClearPendingAttachment={() => setPendingAttachment(null)}
+        onClearPendingAttachments={clearPendingAttachments}
+        onRemovePendingAttachment={handleRemovePendingAttachment}
         onClearReply={() => setReplyingTo(null)}
         onKeyDownMessageInput={handleComposerKeyDown}
+        onPasteMessageInput={handleComposerPaste}
         onOpenFilePicker={() => fileInputRef.current?.click()}
         onSubmit={handleSendMessage}
-        pendingAttachment={pendingAttachment}
+        pendingAttachments={pendingAttachments}
         replyingTo={replyingTo}
         socketReady={socketReady}
       />
+      {isDraggingFiles ? (
+        <div className="pointer-events-none absolute inset-0 z-50 grid place-items-center bg-base-100/55 p-6 backdrop-blur-sm">
+          <div className="rounded-2xl border border-dashed border-primary/50 bg-base-100/95 px-6 py-5 text-center shadow-2xl">
+            <ImagePlusIcon className="mx-auto mb-3 size-8 text-primary" />
+            <p className="font-semibold">Drop files to attach</p>
+            <p className="mt-1 text-sm opacity-70">They’ll appear in the composer preview.</p>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };

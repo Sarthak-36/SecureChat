@@ -22,7 +22,9 @@ const getAttachmentFromMessage = (message) => {
   const attachments = Array.isArray(message?.metadata?.attachments) ? message.metadata.attachments : [];
   return attachments[0] || null;
 };
-const urlPattern = /(?:https?:\/\/|www\.)[^\s<>"')]+/gi;
+const explicitUrlPattern = /(?:https?:\/\/|www\.)[^\s<>"')]+/gi;
+const bareDomainPattern =
+  /(^|[^\w@])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?:\/[^\s<>"')]+)?)/gi;
 
 const resolveAttachmentPath = (attachmentUrl) => {
   const parsedUrl = new URL(attachmentUrl, "http://localhost");
@@ -54,10 +56,18 @@ const getAccessibleMessage = async ({ messageId, currentUserId }) => {
 };
 
 const extractLinksFromText = (text = "") => {
-  const matches = text.match(urlPattern) || [];
+  const matches = [
+    ...(text.match(explicitUrlPattern) || []),
+    ...[...text.matchAll(bareDomainPattern)].map((match) => match[2]).filter(Boolean),
+  ];
   return [
     ...new Set(
-      matches.map((match) => (match.startsWith("http://") || match.startsWith("https://") ? match : `https://${match}`))
+      matches.map((match) => {
+        const cleanedMatch = match.replace(/[.,!?;:]+$/g, "");
+        return cleanedMatch.startsWith("http://") || cleanedMatch.startsWith("https://")
+          ? cleanedMatch
+          : `https://${cleanedMatch}`;
+      })
     ),
   ];
 };
@@ -395,6 +405,7 @@ export async function describeMessageImage(req, res) {
       buffer: fileBuffer,
       mimeType: attachment.mimeType,
       attachmentName: attachment.name,
+      attachmentUrl: attachment.url,
     });
     const payload = {
       success: true,

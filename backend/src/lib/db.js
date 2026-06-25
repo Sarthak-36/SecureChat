@@ -18,6 +18,22 @@ const schemaQueries = [
     );
   `,
   `
+    CREATE TABLE IF NOT EXISTS registration_otps (
+      id UUID PRIMARY KEY,
+      email TEXT NOT NULL,
+      full_name TEXT NOT NULL,
+      password TEXT NOT NULL,
+      otp TEXT NOT NULL,
+      used BOOLEAN NOT NULL DEFAULT FALSE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS idx_registration_otps_email
+    ON registration_otps (email);
+  `,
+  `
     CREATE TABLE IF NOT EXISTS friendships (
       user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       friend_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -97,6 +113,32 @@ const schemaQueries = [
   `
     CREATE INDEX IF NOT EXISTS idx_ai_message_checks_message_type
     ON ai_message_checks (message_id, check_type);
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS hidden_notifications (
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      notification_type TEXT NOT NULL,
+      source_id UUID NOT NULL,
+      hidden_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, notification_type, source_id)
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS idx_hidden_notifications_user_type
+    ON hidden_notifications (user_id, notification_type);
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS read_notifications (
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      notification_type TEXT NOT NULL,
+      source_id UUID NOT NULL,
+      read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, notification_type, source_id)
+    );
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS idx_read_notifications_user_type
+    ON read_notifications (user_id, notification_type);
   `,
   `
     ALTER TABLE ai_message_checks

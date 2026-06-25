@@ -13,6 +13,7 @@ const ChatHeader = ({
   isSearchExpanded,
   matchingMessageCount,
   messageSearch,
+  searchInputRef,
   normalizedMessageSearch,
   onChangeSearch,
   onClearConversation,
@@ -25,17 +26,18 @@ const ChatHeader = ({
   targetUser,
 }) => (
   <div className="border-b border-base-300">
-    <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4">
-      <div className="min-w-0 flex items-center gap-3">
+    <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-3 py-3 sm:px-4 sm:py-4">
+      <div className="min-w-0 flex-1 items-center gap-3 flex">
         <ToggleDropdown
           contentClassName="w-56 rounded-2xl border border-base-300 bg-base-100 p-2 shadow-xl"
           renderTrigger={({ toggle }) => (
             <button type="button" className="avatar cursor-pointer" onClick={toggle}>
-              <div className="w-12 rounded-full">
+              <div className="w-10 rounded-full sm:w-12">
                 <AvatarImage
                   src={targetUser?.profilePic}
                   name={targetUser?.fullName}
                   alt={targetUser?.fullName || "Friend"}
+                  className="h-full w-full object-cover"
                 />
               </div>
             </button>
@@ -69,28 +71,38 @@ const ChatHeader = ({
             </>
           )}
         </ToggleDropdown>
-        <div>
-          <h1 className="font-semibold text-lg">{targetUser?.fullName || "Conversation"}</h1>
-          <div className="flex items-center gap-2 text-sm opacity-70">
+        <div className="min-w-0">
+          <h1 className="truncate text-base font-semibold sm:text-lg">
+            {targetUser?.fullName || "Conversation"}
+          </h1>
+          <div className="flex min-w-0 items-center gap-2 text-xs opacity-70 sm:text-sm">
             <span className={`size-2 rounded-full ${isTargetUserOnline ? "bg-success" : "bg-base-content/30"}`} />
-            <p>{socketReady ? (isTargetUserOnline ? "Online" : "Offline") : "Connecting..."}</p>
+            <p className="truncate">{socketReady ? (isTargetUserOnline ? "Online" : "Offline") : "Connecting..."}</p>
           </div>
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center justify-end gap-1.5 sm:gap-2">
+        <div
+          className={`overflow-hidden transition-[width,opacity] duration-200 ease-out ${
+            isSearchExpanded ? "w-44 opacity-100 sm:w-72 md:w-80" : "w-0 opacity-0"
+          }`}
+        >
+          <label className="input input-bordered input-sm flex min-w-0 items-center gap-2">
+            <SearchIcon className="size-4 shrink-0 opacity-70" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={messageSearch}
+              onChange={onChangeSearch}
+              placeholder="Search messages"
+              className="min-w-0 flex-1 bg-transparent"
+            />
+          </label>
+        </div>
+
         {isSearchExpanded ? (
           <>
-            <label className="input input-bordered input-sm flex items-center gap-2">
-              <SearchIcon className="size-4 opacity-70" />
-              <input
-                type="text"
-                value={messageSearch}
-                onChange={onChangeSearch}
-                placeholder="Search messages"
-                className="w-40 bg-transparent"
-              />
-            </label>
             <button
               type="button"
               className="btn btn-ghost btn-circle btn-sm"
@@ -116,7 +128,9 @@ const ChatHeader = ({
             <SearchIcon className="size-4" />
           </button>
         )}
-        <CallButton handleVideoCall={handleVideoCall} />
+        <span className="inline-flex">
+          <CallButton handleVideoCall={handleVideoCall} />
+        </span>
       </div>
     </div>
     {isSearchExpanded && normalizedMessageSearch ? (
@@ -124,7 +138,7 @@ const ChatHeader = ({
         <span>
           {matchingMessageCount === 0
             ? "0 messages found"
-            : `${activeSearchMatchIndex + 1} of ${matchingMessageCount} matches`}
+            : `${activeSearchMatchIndex + 1} of ${matchingMessageCount} matches from bottom`}
         </span>
         {matchingMessageCount === 0 ? <span>No matches for this search</span> : null}
       </div>

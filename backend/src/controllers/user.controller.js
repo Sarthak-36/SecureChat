@@ -203,35 +203,234 @@ export async function getFriendRequests(req, res) {
     const incomingReqs = await query(
       `
         SELECT fr.id, fr.status, fr.created_at, fr.updated_at,
+               (rn.source_id IS NOT NULL) AS is_read,
                u.id AS sender_id, u.full_name AS sender_full_name, u.profile_pic AS sender_profile_pic,
                u.location AS sender_location
         FROM friend_requests fr
         INNER JOIN users u ON u.id = fr.sender_id
+        LEFT JOIN read_notifications rn
+          ON rn.user_id = $1::uuid
+         AND rn.notification_type = 'friend_request'
+         AND rn.source_id = fr.id
         WHERE fr.recipient_id = $1 AND fr.status = 'pending'
         ORDER BY fr.created_at DESC
       `,
       [req.user._id]
     );
 
-    const acceptedReqs = await query(
+    const acceptedSentReqs = await query(
       `
         SELECT fr.id, fr.status, fr.created_at, fr.updated_at,
+               (rn.source_id IS NOT NULL) AS is_read,
                u.id AS recipient_id, u.full_name AS recipient_full_name,
                u.profile_pic AS recipient_profile_pic, u.location AS recipient_location
         FROM friend_requests fr
         INNER JOIN users u ON u.id = fr.recipient_id
+        LEFT JOIN hidden_notifications hn
+          ON hn.user_id = $1::uuid
+         AND hn.notification_type = 'accepted_friend_request'
+         AND hn.source_id = fr.id
+        LEFT JOIN read_notifications rn
+          ON rn.user_id = $1::uuid
+         AND rn.notification_type = 'accepted_friend_request'
+         AND rn.source_id = fr.id
         WHERE fr.sender_id = $1 AND fr.status = 'accepted'
+          AND hn.source_id IS NULL
         ORDER BY fr.updated_at DESC
       `,
       [req.user._id]
     );
 
+    const acceptedReceivedReqs = await query(
+      `
+        SELECT fr.id, fr.status, fr.created_at, fr.updated_at,
+               (rn.source_id IS NOT NULL) AS is_read,
+               u.id AS sender_id, u.full_name AS sender_full_name,
+               u.profile_pic AS sender_profile_pic, u.location AS sender_location
+        FROM friend_requests fr
+        INNER JOIN users u ON u.id = fr.sender_id
+        LEFT JOIN hidden_notifications hn
+          ON hn.user_id = $1::uuid
+         AND hn.notification_type = 'accepted_friend_request'
+         AND hn.source_id = fr.id
+        LEFT JOIN read_notifications rn
+          ON rn.user_id = $1::uuid
+         AND rn.notification_type = 'accepted_friend_request'
+         AND rn.source_id = fr.id
+        WHERE fr.recipient_id = $1 AND fr.status = 'accepted'
+          AND hn.source_id IS NULL
+        ORDER BY fr.updated_at DESC
+      `,
+      [req.user._id]
+    );
+
+    const acceptedReqs = [
+      ...acceptedSentReqs.rows.map((row) => {
+        const notification = serializeFriendRequestRow(row, "recipient");
+        return {
+          ...notification,
+          isRead: Boolean(row.is_read),
+          connection: notification.recipient,
+          notificationRole: "request_sent",
+          notificationText: `${notification.recipient.fullName} accepted your friend request`,
+        };
+      }),
+      ...acceptedReceivedReqs.rows.map((row) => {
+        const notification = serializeFriendRequestRow(row, "sender");
+        return {
+          ...notification,
+          isRead: Boolean(row.is_read),
+          connection: notification.sender,
+          notificationRole: "request_received",
+          notificationText: `You accepted ${notification.sender.fullName}'s friend request`,
+        };
+      }),
+    ].sort((first, second) => new Date(second.updatedAt) - new Date(first.updatedAt));
+
     res.status(200).json({
-      incomingReqs: incomingReqs.rows.map((row) => serializeFriendRequestRow(row, "sender")),
-      acceptedReqs: acceptedReqs.rows.map((row) => serializeFriendRequestRow(row, "recipient")),
+      incomingReqs: incomingReqs.rows.map((row) => ({
+        ...serializeFriendRequestRow(row, "sender"),
+        isRead: Boolean(row.is_read),
+      })),
+      acceptedReqs,
     });
   } catch (error) {
     console.error("Error in getFriendRequests controller", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+}
+
+export async function getUnreadNotificationCount(req, res) {
+  try {
+    const result = await query(
+      `
+        WITH visible_notifications AS (
+          SELECT fr.id, 'friend_request'::text AS notification_type
+          FROM friend_requests fr
+          WHERE fr.recipient_id = $1::uuid
+            AND fr.status = 'pending'
+
+          UNION ALL
+
+          SELECT fr.id, 'accepted_friend_request'::text AS notification_type
+          FROM friend_requests fr
+          LEFT JOIN hidden_notifications hn
+            ON hn.user_id = $1::uuid
+           AND hn.notification_type = 'accepted_friend_request'
+           AND hn.source_id = fr.id
+          WHERE fr.status = 'accepted'
+            AND (fr.sender_id = $1::uuid OR fr.recipient_id = $1::uuid)
+            AND hn.source_id IS NULL
+        )
+        SELECT COUNT(*)::INT AS unread_count
+        FROM visible_notifications vn
+        LEFT JOIN read_notifications rn
+          ON rn.user_id = $1::uuid
+         AND rn.notification_type = vn.notification_type
+         AND rn.source_id = vn.id
+        WHERE rn.source_id IS NULL
+      `,
+      [req.user._id]
+    );
+
+    res.status(200).json({ unreadCount: Number(result.rows[0]?.unread_count || 0) });
+  } catch (error) {
+    console.error("Error in getUnreadNotificationCount controller", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+}
+
+export async function markNotificationsRead(req, res) {
+  try {
+    const result = await query(
+      `
+        WITH visible_notifications AS (
+          SELECT fr.id, 'friend_request'::text AS notification_type
+          FROM friend_requests fr
+          WHERE fr.recipient_id = $1::uuid
+            AND fr.status = 'pending'
+
+          UNION ALL
+
+          SELECT fr.id, 'accepted_friend_request'::text AS notification_type
+          FROM friend_requests fr
+          LEFT JOIN hidden_notifications hn
+            ON hn.user_id = $1::uuid
+           AND hn.notification_type = 'accepted_friend_request'
+           AND hn.source_id = fr.id
+          WHERE fr.status = 'accepted'
+            AND (fr.sender_id = $1::uuid OR fr.recipient_id = $1::uuid)
+            AND hn.source_id IS NULL
+        )
+        INSERT INTO read_notifications (user_id, notification_type, source_id)
+        SELECT $1::uuid, notification_type, id
+        FROM visible_notifications
+        ON CONFLICT DO NOTHING
+        RETURNING source_id
+      `,
+      [req.user._id]
+    );
+
+    res.status(200).json({ success: true, markedReadCount: result.rowCount });
+  } catch (error) {
+    console.error("Error in markNotificationsRead controller", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+}
+
+export async function hideAcceptedFriendRequestNotification(req, res) {
+  try {
+    const { id: requestId } = req.params;
+
+    const notification = await query(
+      `
+        SELECT id
+        FROM friend_requests
+        WHERE id = $1
+          AND status = 'accepted'
+          AND (sender_id = $2::uuid OR recipient_id = $2::uuid)
+      `,
+      [requestId, req.user._id]
+    );
+
+    if (!notification.rows[0]) {
+      return res.status(404).json({ message: "Notification not found" });
+    }
+
+    await query(
+      `
+        INSERT INTO hidden_notifications (user_id, notification_type, source_id)
+        VALUES ($1, 'accepted_friend_request', $2)
+        ON CONFLICT DO NOTHING
+      `,
+      [req.user._id, requestId]
+    );
+
+    res.status(200).json({ success: true, hiddenNotificationId: requestId });
+  } catch (error) {
+    console.error("Error in hideAcceptedFriendRequestNotification controller", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+}
+
+export async function clearAcceptedFriendRequestNotifications(req, res) {
+  try {
+    const hiddenNotifications = await query(
+      `
+        INSERT INTO hidden_notifications (user_id, notification_type, source_id)
+        SELECT $1::uuid, 'accepted_friend_request', fr.id
+        FROM friend_requests fr
+        WHERE fr.status = 'accepted'
+          AND (fr.sender_id = $1::uuid OR fr.recipient_id = $1::uuid)
+        ON CONFLICT DO NOTHING
+        RETURNING source_id
+      `,
+      [req.user._id]
+    );
+
+    res.status(200).json({ success: true, hiddenCount: hiddenNotifications.rowCount });
+  } catch (error) {
+    console.error("Error in clearAcceptedFriendRequestNotifications controller", error);
     res.status(500).json({ message: "Internal Server Error" });
   }
 }

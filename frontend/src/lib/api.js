@@ -5,6 +5,16 @@ export const signup = async (signupData) => {
   return response.data;
 };
 
+export const requestSignupOtp = async (signupData) => {
+  const response = await axiosInstance.post("/auth/signup/request-otp", signupData);
+  return response.data;
+};
+
+export const verifySignupOtp = async (verifyData) => {
+  const response = await axiosInstance.post("/auth/signup/verify-otp", verifyData);
+  return response.data;
+};
+
 export const login = async (loginData) => {
   const response = await axiosInstance.post("/auth/login", loginData);
   return response.data;
@@ -84,6 +94,26 @@ export async function getFriendRequests() {
 
 export async function acceptFriendRequest(requestId) {
   const response = await axiosInstance.put(`/users/friend-request/${requestId}/accept`);
+  return response.data;
+}
+
+export async function hideAcceptedFriendRequestNotification(requestId) {
+  const response = await axiosInstance.delete(`/users/notifications/accepted-friend-requests/${requestId}`);
+  return response.data;
+}
+
+export async function clearAcceptedFriendRequestNotifications() {
+  const response = await axiosInstance.delete("/users/notifications/accepted-friend-requests");
+  return response.data;
+}
+
+export async function getUnreadNotificationCount() {
+  const response = await axiosInstance.get("/users/notifications/unread-count");
+  return response.data;
+}
+
+export async function markNotificationsRead() {
+  const response = await axiosInstance.post("/users/notifications/mark-read");
   return response.data;
 }
 

@@ -7,6 +7,9 @@ import {
   Link2,
   Image as ImageIcon,
   ChevronRightIcon,
+  CopyIcon,
+  ReplyIcon,
+  Trash2Icon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
@@ -17,6 +20,7 @@ import {
   offset,
   autoUpdate,
 } from "@floating-ui/react";
+import { containsLink } from "../../lib/links";
 
 const MessageActions = ({
   canDeleteForEveryone,
@@ -58,6 +62,7 @@ const MessageActions = ({
   });
 
   const hasText = Boolean(message.text?.trim());
+  const hasLink = containsLink(message.text);
   const hasImageAttachment = message.metadata?.attachments?.[0]?.type === "image";
 
   const isAnyAiRunning =
@@ -132,7 +137,11 @@ const MessageActions = ({
   };
 
   const handleCopy = async () => {
-    const textToCopy = message.text || message.metadata?.attachments?.[0]?.url;
+    const attachmentUrls = Array.isArray(message.metadata?.attachments)
+      ? message.metadata.attachments.map((attachment) => attachment.url).filter(Boolean)
+      : [];
+    const textToCopy = [message.text, ...attachmentUrls].filter(Boolean).join("\n");
+
     if (!textToCopy) {
       toast.error("Nothing to copy");
       return;
@@ -147,7 +156,10 @@ const MessageActions = ({
   };
 
   return (
-    <div ref={containerRef}>
+    <div
+      ref={containerRef}
+      className={`message-actions shrink-0 ${open ? "message-actions-open" : ""}`}
+    >
       <button
         ref={refs.setReference}
         onClick={() => {
@@ -155,16 +167,20 @@ const MessageActions = ({
           setAiOpen(false);
           setAiPinned(false);
         }}
-        className="btn btn-ghost btn-circle btn-xs"
+        className={`btn btn-ghost btn-circle btn-xs border border-transparent bg-base-100/60 shadow-sm backdrop-blur ${
+          isAnyAiRunning ? "text-info ring-1 ring-info/30" : ""
+        }`}
+        title="Message actions"
+        aria-label="Message actions"
       >
-        <EllipsisVerticalIcon className="size-4" />
+        {isAnyAiRunning ? <Sparkles className="size-4 animate-pulse" /> : <EllipsisVerticalIcon className="size-4" />}
       </button>
 
       {open ? (
         <div
           ref={refs.setFloating}
           style={floatingStyles}
-          className="z-50 w-48 rounded-box bg-base-200 p-2 shadow-lg"
+          className="z-50 w-52 rounded-xl border border-base-content/10 bg-base-100/95 p-2 shadow-xl backdrop-blur"
         >
           <ul className="space-y-1">
             <li>
@@ -175,6 +191,7 @@ const MessageActions = ({
                   closeAllMenus();
                 }}
               >
+                <ReplyIcon className="mr-2 size-4" />
                 Reply
               </button>
             </li>
@@ -187,16 +204,19 @@ const MessageActions = ({
                   closeAllMenus();
                 }}
               >
+                <CopyIcon className="mr-2 size-4" />
                 Copy
               </button>
             </li>
 
-            <div className="divider my-1" />
+            <div className="my-1 h-px bg-base-content/10" />
 
             <li>
               <button
                 ref={aiRefs.setReference}
-                className="btn btn-ghost btn-sm w-full justify-between"
+                className={`btn btn-ghost btn-sm w-full justify-between ${
+                  isAnyAiRunning ? "bg-info/10 text-info" : ""
+                }`}
                 onMouseEnter={openAiMenu}
                 onMouseLeave={scheduleAiClose}
                 onClick={() => {
@@ -218,7 +238,7 @@ const MessageActions = ({
               </button>
             </li>
 
-            <div className="divider my-1" />
+            <div className="my-1 h-px bg-base-content/10" />
 
             <li>
               <button
@@ -228,6 +248,7 @@ const MessageActions = ({
                   closeAllMenus();
                 }}
               >
+                <Trash2Icon className="mr-2 size-4" />
                 Delete for me
               </button>
             </li>
@@ -241,6 +262,7 @@ const MessageActions = ({
                     closeAllMenus();
                   }}
                 >
+                  <Trash2Icon className="mr-2 size-4" />
                   Delete for everyone
                 </button>
               </li>
@@ -253,7 +275,7 @@ const MessageActions = ({
         <div
           ref={aiRefs.setFloating}
           style={aiStyles}
-          className="z-50 w-44 rounded-box bg-base-100 p-2 shadow-md"
+          className="z-50 w-52 rounded-xl border border-base-content/10 bg-base-100/95 p-2 shadow-xl backdrop-blur"
           onMouseEnter={openAiMenu}
           onMouseLeave={scheduleAiClose}
         >
@@ -306,19 +328,21 @@ const MessageActions = ({
               </li>
             ) : null}
 
-            <li>
-              <button
-                className="btn btn-ghost btn-sm w-full justify-start"
-                disabled={isAnyAiRunning}
-                onClick={() => {
-                  onRunLinkCheck(message);
-                  closeAllMenus();
-                }}
-              >
-                <Link2 className="mr-2 size-4" />
-                {isRunningLinkCheck ? "Checking..." : "Link Check"}
-              </button>
-            </li>
+            {hasLink ? (
+              <li>
+                <button
+                  className="btn btn-ghost btn-sm w-full justify-start"
+                  disabled={isAnyAiRunning}
+                  onClick={() => {
+                    onRunLinkCheck(message);
+                    closeAllMenus();
+                  }}
+                >
+                  <Link2 className="mr-2 size-4" />
+                  {isRunningLinkCheck ? "Checking..." : "Link Check"}
+                </button>
+              </li>
+            ) : null}
 
             <li>
               <button

@@ -5,12 +5,124 @@ import { cookieOptions, signAuthToken } from "../lib/auth.js";
 import { query } from "../lib/db.js";
 import { serializeUser } from "../lib/formatters.js";
 import { getUserWithPasswordByEmail } from "../lib/users.js";
+import { sendOtpEmail } from "../lib/email.js";
 
 const DEFAULT_PROFILE_PIC = "/default-avatar.svg";
 const normalizeProfilePic = (profilePic) => {
   const normalizedProfilePic = typeof profilePic === "string" ? profilePic.trim() : "";
   return normalizedProfilePic || DEFAULT_PROFILE_PIC;
 };
+
+const generateOtp = () => String(Math.floor(100000 + Math.random() * 900000));
+
+export async function requestSignupOtp(req, res) {
+  const { email, password, fullName } = req.body;
+
+  try {
+    if (!email || !password || !fullName) {
+      return res.status(400).json({ message: "All fields are required" });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ message: "Invalid email format" });
+    }
+
+    const existingUser = await query("SELECT id FROM users WHERE email = $1", [email]);
+    if (existingUser.rows[0]) {
+      return res.status(400).json({ message: "Email already exists, please use a different one" });
+    }
+
+    await query("UPDATE registration_otps SET used = TRUE WHERE email = $1 AND used = FALSE", [email]);
+
+    const otp = generateOtp();
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+    await query(
+      `
+        INSERT INTO registration_otps (id, email, full_name, password, otp, expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `,
+      [randomUUID(), email, fullName, hashedPassword, otp, expiresAt]
+    );
+
+    await sendOtpEmail(email, fullName, otp);
+
+    res.status(200).json({
+      success: true,
+      message: "OTP sent to your email. It expires in 10 minutes.",
+    });
+  } catch (error) {
+    console.error("Error sending signup OTP", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+}
+
+export async function verifySignupOtp(req, res) {
+  const { email, otp } = req.body;
+
+  try {
+    if (!email || !otp) {
+      return res.status(400).json({ message: "Email and OTP are required" });
+    }
+
+    const existingOtpResult = await query(
+      `
+        SELECT id, full_name, password, otp, used, expires_at
+        FROM registration_otps
+        WHERE email = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [email]
+    );
+
+    const registrationOtp = existingOtpResult.rows[0];
+    if (!registrationOtp || registrationOtp.used) {
+      return res.status(400).json({ message: "Invalid or expired OTP" });
+    }
+
+    const expiresAt = new Date(registrationOtp.expires_at);
+    if (expiresAt < new Date()) {
+      return res.status(400).json({ message: "OTP has expired" });
+    }
+
+    if (registrationOtp.otp !== otp) {
+      return res.status(400).json({ message: "Invalid OTP" });
+    }
+
+    const existingUser = await query("SELECT id FROM users WHERE email = $1", [email]);
+    if (existingUser.rows[0]) {
+      return res.status(400).json({ message: "Email already registered" });
+    }
+
+    const userId = randomUUID();
+    const createdUser = await query(
+      `
+        INSERT INTO users (id, email, password, full_name, profile_pic)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, email, full_name, bio, profile_pic,
+                  location, is_onboarded, created_at, updated_at
+      `,
+      [userId, email, registrationOtp.password, registrationOtp.full_name, DEFAULT_PROFILE_PIC]
+    );
+
+    await query("UPDATE registration_otps SET used = TRUE WHERE id = $1", [registrationOtp.id]);
+
+    const token = signAuthToken(userId);
+    res.cookie("jwt", token, cookieOptions);
+
+    res.status(201).json({ success: true, user: serializeUser(createdUser.rows[0]) });
+  } catch (error) {
+    console.error("Error verifying signup OTP", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+}
 
 export async function signup(req, res) {
   const { email, password, fullName } = req.body;

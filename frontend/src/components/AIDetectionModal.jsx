@@ -1,3 +1,13 @@
+import {
+  AlertTriangleIcon,
+  CheckCircle2Icon,
+  Clock3Icon,
+  RefreshCwIcon,
+  ShieldCheckIcon,
+  SparklesIcon,
+  XIcon,
+} from "lucide-react";
+
 const detectionToneByStatus = {
   high_risk: "badge-error",
   review: "badge-warning",
@@ -38,6 +48,55 @@ const getReadableLabel = (prediction, modelName) => {
   return prettifyFallbackLabel(prediction.label || "Unavailable");
 };
 
+const statusIconByStatus = {
+  high_risk: AlertTriangleIcon,
+  review: AlertTriangleIcon,
+  clear: CheckCircle2Icon,
+  likely_ai: SparklesIcon,
+  possible_ai: AlertTriangleIcon,
+  likely_real: CheckCircle2Icon,
+  block_review: AlertTriangleIcon,
+  needs_review: AlertTriangleIcon,
+};
+
+const getStatusToneClass = (status) => detectionToneByStatus[status] || "badge-ghost";
+
+const StatusBadge = ({ status, label }) => {
+  const Icon = statusIconByStatus[status] || ShieldCheckIcon;
+
+  return (
+    <span
+      className={`badge h-auto max-w-full gap-1.5 self-start whitespace-normal px-3 py-2 text-left leading-tight sm:max-w-[12rem] sm:self-auto sm:text-right ${getStatusToneClass(
+        status,
+      )}`}
+    >
+      <Icon className="size-3.5 shrink-0" />
+      {label || status?.replace(/_/g, " ") || "No summary"}
+    </span>
+  );
+};
+
+const MetricTile = ({ label, value, suffix = "", tone = "bg-base-100" }) => (
+  <div className={`rounded-xl px-3 py-2 ${tone}`}>
+    <p className="text-xs uppercase tracking-wide opacity-60">{label}</p>
+    <p className="text-lg font-semibold">
+      {value ?? 0}
+      {suffix}
+    </p>
+  </div>
+);
+
+const ScoreRow = ({ label, percent = 0, modelName }) => (
+  <div className="space-y-1.5 text-sm">
+    <div className="flex items-center justify-between gap-3">
+      <span className="truncate">{label}</span>
+      <span className="font-medium">{percent}%</span>
+    </div>
+    <progress className="progress progress-primary h-1.5 w-full" value={percent} max="100" />
+    {modelName ? <p className="truncate text-[11px] opacity-55">{modelName}</p> : null}
+  </div>
+);
+
 const LinkOverallResultCard = ({ overall, phishingSummary, reputationSummary, extractedLinks = [] }) => (
   <div className="rounded-2xl border border-base-300 bg-base-200 p-4">
     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -45,28 +104,13 @@ const LinkOverallResultCard = ({ overall, phishingSummary, reputationSummary, ex
         <h3 className="font-semibold">Link safety result</h3>
         <p className="mt-1 text-sm opacity-80">{overall?.message}</p>
       </div>
-      <span
-        className={`badge h-auto max-w-full self-start whitespace-normal px-3 py-2 text-left leading-tight sm:max-w-[12rem] sm:self-auto sm:text-right ${
-          detectionToneByStatus[overall?.status] || "badge-ghost"
-        }`}
-      >
-        {overall?.label || "No summary"}
-      </span>
+      <StatusBadge status={overall?.status} label={overall?.label} />
     </div>
 
     <div className="mt-4 grid gap-3 sm:grid-cols-3">
-      <div className="rounded-xl bg-base-100 px-3 py-2">
-        <p className="text-xs uppercase tracking-wide opacity-60">Phishing risk</p>
-        <p className="text-lg font-semibold">{phishingSummary?.phishingPercent ?? 0}%</p>
-      </div>
-      <div className="rounded-xl bg-base-100 px-3 py-2">
-        <p className="text-xs uppercase tracking-wide opacity-60">Reputation flags</p>
-        <p className="text-lg font-semibold">{reputationSummary?.flaggedCount ?? 0}</p>
-      </div>
-      <div className="rounded-xl bg-base-100 px-3 py-2">
-        <p className="text-xs uppercase tracking-wide opacity-60">Links found</p>
-        <p className="text-lg font-semibold">{extractedLinks.length}</p>
-      </div>
+      <MetricTile label="Phishing risk" value={phishingSummary?.phishingPercent ?? 0} suffix="%" />
+      <MetricTile label="Reputation flags" value={reputationSummary?.flaggedCount ?? 0} />
+      <MetricTile label="Links found" value={extractedLinks.length} />
     </div>
   </div>
 );
@@ -78,24 +122,12 @@ const ReputationSummaryCard = ({ reputationSummary, modelName }) => (
         <h3 className="font-semibold">URL Reputation</h3>
         <p className="text-sm opacity-70">{modelName}</p>
       </div>
-      <span
-        className={`badge h-auto max-w-full self-start whitespace-normal px-3 py-2 text-left leading-tight sm:max-w-[12rem] sm:self-auto sm:text-right ${
-          detectionToneByStatus[reputationSummary?.status] || "badge-ghost"
-        }`}
-      >
-        {reputationSummary?.label || "No summary"}
-      </span>
+      <StatusBadge status={reputationSummary?.status} label={reputationSummary?.label} />
     </div>
 
     <div className="mt-3 grid gap-3 sm:grid-cols-2">
-      <div className="rounded-xl bg-base-100 px-3 py-2">
-        <p className="text-xs uppercase tracking-wide opacity-60">Flagged links</p>
-        <p className="text-lg font-semibold">{reputationSummary?.flaggedCount ?? 0}</p>
-      </div>
-      <div className="rounded-xl bg-base-100 px-3 py-2">
-        <p className="text-xs uppercase tracking-wide opacity-60">Configured</p>
-        <p className="text-lg font-semibold">{reputationSummary?.configured ? "Yes" : "No"}</p>
-      </div>
+      <MetricTile label="Flagged links" value={reputationSummary?.flaggedCount ?? 0} />
+      <MetricTile label="Configured" value={reputationSummary?.configured ? "Yes" : "No"} />
     </div>
 
     {reputationSummary?.matches?.length ? (
@@ -128,32 +160,21 @@ const LinkResultCard = ({ linkResult, modelName }) => (
           Top result: {getReadableLabel(linkResult.summary?.topPrediction, modelName)}
         </p>
       </div>
-      <span
-        className={`badge h-auto max-w-full self-start whitespace-normal px-3 py-2 text-left leading-tight sm:max-w-[12rem] sm:self-auto sm:text-right ${
-          detectionToneByStatus[linkResult.summary?.status] || "badge-ghost"
-        }`}
-      >
-        {linkResult.summary?.status?.replace(/_/g, " ") || "unknown"}
-      </span>
+      <StatusBadge status={linkResult.summary?.status} />
     </div>
 
     <div className="mt-3 grid gap-3 sm:grid-cols-2">
-      <div className="rounded-xl bg-base-100 px-3 py-2">
-        <p className="text-xs uppercase tracking-wide opacity-60">Phishing risk</p>
-        <p className="text-lg font-semibold">{linkResult.summary?.phishingPercent ?? 0}%</p>
-      </div>
-      <div className="rounded-xl bg-base-100 px-3 py-2">
-        <p className="text-xs uppercase tracking-wide opacity-60">Safe score</p>
-        <p className="text-lg font-semibold">{linkResult.summary?.safePercent ?? 0}%</p>
-      </div>
+      <MetricTile label="Phishing risk" value={linkResult.summary?.phishingPercent ?? 0} suffix="%" />
+      <MetricTile label="Safe score" value={linkResult.summary?.safePercent ?? 0} suffix="%" />
     </div>
 
     <div className="mt-3 space-y-2">
-      {linkResult.predictions.slice(0, 3).map((prediction) => (
-        <div key={`${linkResult.url}-${prediction.label}`} className="flex items-center justify-between text-sm">
-          <span className="truncate">{getReadableLabel(prediction, modelName)}</span>
-          <span className="font-medium">{prediction.percent}%</span>
-        </div>
+      {(linkResult.predictions || []).slice(0, 3).map((prediction) => (
+        <ScoreRow
+          key={`${linkResult.url}-${prediction.label}`}
+          label={getReadableLabel(prediction, modelName)}
+          percent={prediction.percent}
+        />
       ))}
     </div>
   </div>
@@ -168,47 +189,30 @@ const DetectionSummaryCard = ({ title, summary, predictions = [], modelName }) =
           Top result: {getReadableLabel(summary?.topPrediction, modelName)}
         </p>
       </div>
-      <span
-        className={`badge h-auto max-w-full self-start whitespace-normal px-3 py-2 text-left leading-tight sm:max-w-[12rem] sm:self-auto sm:text-right ${
-          detectionToneByStatus[summary?.status] || "badge-ghost"
-        }`}
-      >
-        {summary?.status?.replace(/_/g, " ") || "unknown"}
-      </span>
+      <StatusBadge status={summary?.status} />
     </div>
 
     <div className="mt-3 grid gap-3 sm:grid-cols-2">
       {"riskPercent" in (summary || {}) ? (
         <>
-          <div className="rounded-xl bg-base-100 px-3 py-2">
-            <p className="text-xs uppercase tracking-wide opacity-60">NSFW risk</p>
-            <p className="text-lg font-semibold">{summary.riskPercent}%</p>
-          </div>
-          <div className="rounded-xl bg-base-100 px-3 py-2">
-            <p className="text-xs uppercase tracking-wide opacity-60">Safe score</p>
-            <p className="text-lg font-semibold">{summary.safePercent}%</p>
-          </div>
+          <MetricTile label="NSFW risk" value={summary.riskPercent} suffix="%" />
+          <MetricTile label="Safe score" value={summary.safePercent} suffix="%" />
         </>
       ) : (
         <>
-          <div className="rounded-xl bg-base-100 px-3 py-2">
-            <p className="text-xs uppercase tracking-wide opacity-60">AI generated</p>
-            <p className="text-lg font-semibold">{summary?.aiPercent ?? 0}%</p>
-          </div>
-          <div className="rounded-xl bg-base-100 px-3 py-2">
-            <p className="text-xs uppercase tracking-wide opacity-60">Human score</p>
-            <p className="text-lg font-semibold">{summary?.humanPercent ?? 0}%</p>
-          </div>
+          <MetricTile label="AI generated" value={summary?.aiPercent ?? 0} suffix="%" />
+          <MetricTile label="Human score" value={summary?.humanPercent ?? 0} suffix="%" />
         </>
       )}
     </div>
 
     <div className="mt-3 space-y-2">
       {predictions.slice(0, 3).map((prediction) => (
-        <div key={prediction.label} className="flex items-center justify-between text-sm">
-          <span className="truncate">{getReadableLabel(prediction, modelName)}</span>
-          <span className="font-medium">{prediction.percent}%</span>
-        </div>
+        <ScoreRow
+          key={prediction.label}
+          label={getReadableLabel(prediction, modelName)}
+          percent={prediction.percent}
+        />
       ))}
     </div>
   </div>
@@ -221,28 +225,13 @@ const ImageOverallResultCard = ({ overall, nsfwSummary, aiSummary }) => (
         <h3 className="font-semibold">Final result</h3>
         <p className="mt-1 text-sm opacity-80">{overall?.message}</p>
       </div>
-      <span
-        className={`badge h-auto max-w-full self-start whitespace-normal px-3 py-2 text-left leading-tight sm:max-w-[12rem] sm:self-auto sm:text-right ${
-          detectionToneByStatus[overall?.status] || "badge-ghost"
-        }`}
-      >
-        {overall?.label || "No summary"}
-      </span>
+      <StatusBadge status={overall?.status} label={overall?.label} />
     </div>
 
     <div className="mt-4 grid gap-3 sm:grid-cols-3">
-      <div className="rounded-xl bg-base-100 px-3 py-2">
-        <p className="text-xs uppercase tracking-wide opacity-60">NSFW risk</p>
-        <p className="text-lg font-semibold">{nsfwSummary?.riskPercent ?? 0}%</p>
-      </div>
-      <div className="rounded-xl bg-base-100 px-3 py-2">
-        <p className="text-xs uppercase tracking-wide opacity-60">AI generated</p>
-        <p className="text-lg font-semibold">{aiSummary?.aiPercent ?? 0}%</p>
-      </div>
-      <div className="rounded-xl bg-base-100 px-3 py-2">
-        <p className="text-xs uppercase tracking-wide opacity-60">Human score</p>
-        <p className="text-lg font-semibold">{aiSummary?.humanPercent ?? 0}%</p>
-      </div>
+      <MetricTile label="NSFW risk" value={nsfwSummary?.riskPercent ?? 0} suffix="%" />
+      <MetricTile label="AI generated" value={aiSummary?.aiPercent ?? 0} suffix="%" />
+      <MetricTile label="Human score" value={aiSummary?.humanPercent ?? 0} suffix="%" />
     </div>
   </div>
 );
@@ -254,24 +243,12 @@ const TextOverallResultCard = ({ overall, summary }) => (
         <h3 className="font-semibold">Final result</h3>
         <p className="mt-1 text-sm opacity-80">{overall?.message}</p>
       </div>
-      <span
-        className={`badge h-auto max-w-full self-start whitespace-normal px-3 py-2 text-left leading-tight sm:max-w-[12rem] sm:self-auto sm:text-right ${
-          detectionToneByStatus[overall?.status] || "badge-ghost"
-        }`}
-      >
-        {overall?.label || "No summary"}
-      </span>
+      <StatusBadge status={overall?.status} label={overall?.label} />
     </div>
 
     <div className="mt-4 grid gap-3 sm:grid-cols-2">
-      <div className="rounded-xl bg-base-100 px-3 py-2">
-        <p className="text-xs uppercase tracking-wide opacity-60">AI generated</p>
-        <p className="text-lg font-semibold">{summary?.aiPercent ?? 0}%</p>
-      </div>
-      <div className="rounded-xl bg-base-100 px-3 py-2">
-        <p className="text-xs uppercase tracking-wide opacity-60">Human score</p>
-        <p className="text-lg font-semibold">{summary?.humanPercent ?? 0}%</p>
-      </div>
+      <MetricTile label="AI generated" value={summary?.aiPercent ?? 0} suffix="%" />
+      <MetricTile label="Human score" value={summary?.humanPercent ?? 0} suffix="%" />
     </div>
   </div>
 );
@@ -294,32 +271,21 @@ const TextDetectionSummaryCard = ({
           Top result: {getReadableLabel(summary?.topPrediction, modelName)}
         </p>
       </div>
-      <span
-        className={`badge h-auto max-w-full self-start whitespace-normal px-3 py-2 text-left leading-tight sm:max-w-[12rem] sm:self-auto sm:text-right ${
-          detectionToneByStatus[summary?.status] || "badge-ghost"
-        }`}
-      >
-        {summary?.status?.replace(/_/g, " ") || "unknown"}
-      </span>
+      <StatusBadge status={summary?.status} />
     </div>
 
     <div className="mt-3 grid gap-3 sm:grid-cols-2">
-      <div className="rounded-xl bg-base-100 px-3 py-2">
-        <p className="text-xs uppercase tracking-wide opacity-60">{riskLabel}</p>
-        <p className="text-lg font-semibold">{summary?.[riskValueKey] ?? 0}%</p>
-      </div>
-      <div className="rounded-xl bg-base-100 px-3 py-2">
-        <p className="text-xs uppercase tracking-wide opacity-60">{safeLabel}</p>
-        <p className="text-lg font-semibold">{summary?.[safeValueKey] ?? 0}%</p>
-      </div>
+      <MetricTile label={riskLabel} value={summary?.[riskValueKey] ?? 0} suffix="%" />
+      <MetricTile label={safeLabel} value={summary?.[safeValueKey] ?? 0} suffix="%" />
     </div>
 
     <div className="mt-3 space-y-2">
       {predictions.slice(0, 4).map((prediction) => (
-        <div key={prediction.label} className="flex items-center justify-between text-sm">
-          <span className="truncate">{getReadableLabel(prediction, modelName)}</span>
-          <span className="font-medium">{prediction.percent}%</span>
-        </div>
+        <ScoreRow
+          key={prediction.label}
+          label={getReadableLabel(prediction, modelName)}
+          percent={prediction.percent}
+        />
       ))}
     </div>
   </div>
@@ -462,34 +428,49 @@ const AIDetectionModal = ({ result, isRechecking, onClose, onRecheck }) => {
 
   return (
     <dialog className="modal modal-open">
-      <div className="modal-box max-w-2xl space-y-4">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-xl font-semibold">{resultTitle}</h2>
-            <p className="text-sm opacity-70">
-              {checkedLabel} checked at {new Date(checkedAt).toLocaleString()}
-            </p>
-            <p className="mt-1 text-xs opacity-60">
-              {result.cached ? "Showing saved result" : "Freshly checked just now"}
-            </p>
+      <div className="modal-box flex max-h-[calc(100vh-2rem)] max-w-3xl flex-col overflow-hidden p-0">
+        <div className="shrink-0 border-b border-base-content/10 bg-base-200/70 px-5 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+                <ShieldCheckIcon className="size-5" />
+              </span>
+              <div className="min-w-0">
+                <h2 className="text-xl font-semibold">{resultTitle}</h2>
+                <p className="mt-1 truncate text-sm opacity-75">{checkedLabel}</p>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-base-100 px-2.5 py-1 opacity-80">
+                    <Clock3Icon className="size-3.5" />
+                    {checkedAt ? new Date(checkedAt).toLocaleString() : "Unknown time"}
+                  </span>
+                  <span className="rounded-full bg-base-100 px-2.5 py-1 opacity-80">
+                    {result.cached ? "Saved result" : "Fresh result"}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <button type="button" className="btn btn-ghost btn-circle btn-sm" onClick={onClose}>
+              <XIcon className="size-4" />
+            </button>
           </div>
-          <div className="flex items-center gap-2">
+
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+            <p className="max-w-xl text-sm opacity-75">{helperText}</p>
             <button
               type="button"
-              className="btn btn-outline btn-sm"
+              className="btn btn-primary btn-sm"
               onClick={onRecheck}
               disabled={isRechecking}
             >
-              {isRechecking ? "Rechecking..." : "Recheck"}
-            </button>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>
-              Close
+              <RefreshCwIcon className={`size-4 ${isRechecking ? "animate-spin" : ""}`} />
+              {isRechecking ? "Rechecking" : "Recheck"}
             </button>
           </div>
         </div>
 
-        {isImageDetectionResult ? (
-          <>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 pb-8 pt-5">
+          {isImageDetectionResult ? (
+            <>
             <ImageOverallResultCard
               overall={result.analysis.overall}
               nsfwSummary={result.analysis.nsfw.summary}
@@ -509,16 +490,16 @@ const AIDetectionModal = ({ result, isRechecking, onClose, onRecheck }) => {
                 modelName={result.analysis.models.aiGenerated}
               />
             </div>
-          </>
-        ) : isLinkResult ? (
-          <>
+            </>
+          ) : isLinkResult ? (
+            <>
             <div className="rounded-2xl bg-base-200 p-4 text-sm">
               <p className="mb-2 font-medium">Checked text</p>
               <p className="whitespace-pre-wrap break-words opacity-80">{result.text}</p>
             </div>
             <LinkOverallResultCard
               overall={result.analysis.overall}
-              phishingSummary={result.analysis.phishing.summary}
+              phishingSummary={result.analysis.phishing?.summary || null}
               reputationSummary={result.analysis.reputation}
               extractedLinks={result.extractedLinks}
             />
@@ -527,7 +508,7 @@ const AIDetectionModal = ({ result, isRechecking, onClose, onRecheck }) => {
                 reputationSummary={result.analysis.reputation}
                 modelName={result.analysis.models.reputation}
               />
-              {result.analysis.links.map((linkResult) => (
+              {(result.analysis?.links || []).map((linkResult) => (
                 <LinkResultCard
                   key={linkResult.url}
                   linkResult={linkResult}
@@ -535,19 +516,19 @@ const AIDetectionModal = ({ result, isRechecking, onClose, onRecheck }) => {
                 />
               ))}
             </div>
-          </>
-        ) : isSummaryResult ? (
-          <SummaryResultCard
-            summary={{
-              ...result.summary,
-              models: result.summary?.models || result.models,
-            }}
-            sourceText={result.text}
-          />
-        ) : isImageDescriptionResult ? (
-          <ImageDescriptionCard attachment={result.attachment} description={result.description} />
-        ) : (
-          <>
+            </>
+          ) : isSummaryResult ? (
+            <SummaryResultCard
+              summary={{
+                ...result.summary,
+                models: result.summary?.models || result.models,
+              }}
+              sourceText={result.text}
+            />
+          ) : isImageDescriptionResult ? (
+            <ImageDescriptionCard attachment={result.attachment} description={result.description} />
+          ) : (
+            <>
             <div className="rounded-2xl bg-base-200 p-4 text-sm">
               <p className="mb-2 font-medium">Checked text</p>
               <p className="whitespace-pre-wrap break-words opacity-80">{result.text}</p>
@@ -566,10 +547,9 @@ const AIDetectionModal = ({ result, isRechecking, onClose, onRecheck }) => {
               riskValueKey="aiPercent"
               safeValueKey="humanPercent"
             />
-          </>
-        )}
-
-        <div className="rounded-2xl bg-base-200 p-4 text-sm opacity-80">{helperText}</div>
+            </>
+          )}
+        </div>
       </div>
       <form method="dialog" className="modal-backdrop">
         <button type="button" onClick={onClose}>

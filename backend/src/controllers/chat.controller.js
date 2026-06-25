@@ -1,8 +1,62 @@
+import fs from "fs/promises";
+import path from "path";
+import { fileURLToPath } from "url";
+
 import { signWebSocketToken } from "../lib/auth.js";
 import { query } from "../lib/db.js";
 import { serializeMessage } from "../lib/formatters.js";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const backendRoot = path.resolve(__dirname, "..", "..");
+const chatUploadsRoot = path.join(backendRoot, "uploads", "chat");
+
 const getConversationId = (userA, userB) => [userA, userB].sort().join(":");
+
+const resolveChatAttachmentPath = (attachmentUrl) => {
+  if (!attachmentUrl) return null;
+
+  const parsedUrl = new URL(attachmentUrl, "http://localhost");
+  const normalizedPathname = decodeURIComponent(parsedUrl.pathname).replace(/\\/g, "/");
+  const uploadsPrefix = "/uploads/chat/";
+
+  if (!normalizedPathname.startsWith(uploadsPrefix)) return null;
+
+  const filename = path.basename(normalizedPathname);
+  const absolutePath = path.resolve(chatUploadsRoot, filename);
+  const relativePath = path.relative(chatUploadsRoot, absolutePath);
+
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) return null;
+
+  return absolutePath;
+};
+
+const deleteMessageAttachmentFiles = async (messages) => {
+  const attachmentPaths = new Set();
+
+  for (const message of messages) {
+    const attachments = Array.isArray(message.metadata?.attachments) ? message.metadata.attachments : [];
+
+    for (const attachment of attachments) {
+      const attachmentPath = resolveChatAttachmentPath(attachment.url);
+      if (attachmentPath) {
+        attachmentPaths.add(attachmentPath);
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from(attachmentPaths).map(async (attachmentPath) => {
+      try {
+        await fs.unlink(attachmentPath);
+      } catch (error) {
+        if (error.code !== "ENOENT") {
+          console.error("Error deleting chat attachment file:", error);
+        }
+      }
+    })
+  );
+};
 
 const markConversationAsRead = async (userId, conversationId) => {
   const result = await query(
@@ -76,7 +130,7 @@ export async function deleteMessage(req, res) {
         DELETE FROM messages
         WHERE id = $1
           AND sender_id = $2
-        RETURNING id
+        RETURNING id, metadata
       `,
       [messageId, req.user._id]
     );
@@ -84,6 +138,8 @@ export async function deleteMessage(req, res) {
     if (!deletedMessage.rows[0]) {
       return res.status(404).json({ message: "Message not found or not allowed" });
     }
+
+    await deleteMessageAttachmentFiles(deletedMessage.rows);
 
     res.status(200).json({ success: true, deletedMessageId: deletedMessage.rows[0].id });
   } catch (error) {
@@ -168,9 +224,11 @@ export async function garbageCollectHiddenMessages(req, res) {
             WHERE hm_recipient.message_id = m.id
               AND hm_recipient.user_id = m.recipient_id
           )
-        RETURNING id, conversation_id
+        RETURNING id, conversation_id, metadata
       `
     );
+
+    await deleteMessageAttachmentFiles(deletedMessages.rows);
 
     res.status(200).json({
       success: true,

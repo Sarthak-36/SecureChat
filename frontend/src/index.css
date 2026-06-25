@@ -2,6 +2,39 @@
 @tailwind components;
 @tailwind utilities;
 
+.chat-thread-surface {
+  background:
+    radial-gradient(circle at 18px 18px, color-mix(in srgb, currentColor 5%, transparent) 1px, transparent 1.5px),
+    linear-gradient(180deg, color-mix(in srgb, currentColor 3%, transparent), transparent 28%);
+  background-size: 36px 36px, 100% 100%;
+}
+
+.message-bubble {
+  position: relative;
+  z-index: 1;
+  border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.message-actions {
+  position: relative;
+  z-index: 2;
+  opacity: 0.42;
+  transform: translateY(1px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.message-actions-open {
+  z-index: 80;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.group:hover > .message-actions,
+.message-actions:focus-within {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .chat-bubble-own {
   background: linear-gradient(135deg, #dcf8c6 0%, #d2f4bf 100%);
   border: 1px solid rgba(17, 27, 33, 0.08);

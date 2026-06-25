@@ -5,24 +5,25 @@ import useAuthUser from "./useAuthUser";
 import { getChatToken } from "../lib/api";
 import { getWebSocketUrl } from "../lib/realtime";
 
-const usePresence = (userIds = []) => {
+const emptyUserIds = [];
+
+const usePresence = (userIds = emptyUserIds) => {
   const { authUser } = useAuthUser();
+  const authUserId = authUser?._id;
   const [onlineUserIds, setOnlineUserIds] = useState(new Set());
 
   const normalizedUserIds = useMemo(
     () => [...new Set(userIds.filter((userId) => typeof userId === "string" && userId))],
     [userIds]
   );
-  const normalizedUserIdsKey = useMemo(() => normalizedUserIds.join("|"), [normalizedUserIds]);
-
   const { data: tokenData } = useQuery({
     queryKey: ["chatToken"],
     queryFn: getChatToken,
-    enabled: !!authUser,
+    enabled: !!authUserId,
   });
 
   useEffect(() => {
-    if (!authUser || !tokenData?.token) return;
+    if (!authUserId || !tokenData?.token) return;
 
     if (normalizedUserIds.length === 0) {
       setOnlineUserIds(new Set());
@@ -67,7 +68,7 @@ const usePresence = (userIds = []) => {
     return () => {
       socket.close();
     };
-  }, [authUser?._id, normalizedUserIdsKey, tokenData?.token]);
+  }, [authUserId, normalizedUserIds, tokenData?.token]);
 
   return onlineUserIds;
 };

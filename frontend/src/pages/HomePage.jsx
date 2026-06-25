@@ -44,19 +44,22 @@ const HomePage = () => {
   return (
     <div className="p-4 sm:p-6 lg:p-8">
       <div className="container mx-auto space-y-8">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Recent Chats</h1>
             <p className="opacity-70">Friends you have already chatted with appear here.</p>
           </div>
-          <SearchInput
-            value={searchTerm}
-            onChange={setSearchTerm}
-            placeholder="Search recent chats by name or last message"
-          />
+          <div className="w-full lg:w-[34rem] xl:w-[38rem]">
+            <SearchInput
+              value={searchTerm}
+              onChange={setSearchTerm}
+              placeholder="Search recent chats by name or last message"
+              maxWidthClassName="max-w-none"
+            />
+          </div>
         </div>
 
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div className="hidden lg:flex lg:items-center lg:justify-between lg:gap-4">
           <Link to="/notifications" className="btn btn-outline btn-sm">
             <UsersIcon className="mr-2 size-4" />
             Friend Requests

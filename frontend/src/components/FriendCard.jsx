@@ -1,6 +1,7 @@
 import { Link } from "react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
+import { UserMinusIcon } from "lucide-react";
 
 import AvatarImage from "./AvatarImage";
 import ToggleDropdown from "./ToggleDropdown";
@@ -35,9 +36,10 @@ const FriendCard = ({ friend, isOnline = false, showOnlineStatus = false }) => {
   return (
     <div className="rounded-2xl bg-base-200 p-4 shadow-sm transition-shadow hover:shadow-md">
       <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0 flex flex-1 items-center gap-3 overflow-hidden">
+        <div className="min-w-0 flex flex-1 items-center gap-3">
           <ToggleDropdown
-            contentClassName="w-56 rounded-2xl border border-base-300 bg-base-100 p-3 shadow-xl"
+            containerClassName="shrink-0"
+            contentClassName="w-64 rounded-2xl border border-base-300 bg-base-100 p-3 shadow-xl"
             renderTrigger={({ toggle }) => (
               <button type="button" className="avatar cursor-pointer" onClick={toggle}>
                 <div className="w-12 rounded-full">
@@ -47,17 +49,24 @@ const FriendCard = ({ friend, isOnline = false, showOnlineStatus = false }) => {
             )}
           >
             {({ close }) => (
-              <button
-                type="button"
-                className="btn btn-error btn-outline btn-sm w-full"
-                onClick={() => {
-                  handleRemoveFriend();
-                  close();
-                }}
-                disabled={isRemovingFriend}
-              >
-                {isRemovingFriend ? "Removing..." : "Remove from friend list"}
-              </button>
+              <div className="space-y-3">
+                <div className="min-w-0">
+                  <p className="truncate font-semibold">{friend.fullName}</p>
+                  {friend.location ? <p className="truncate text-sm opacity-70">{friend.location}</p> : null}
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-error btn-outline btn-sm w-full justify-start"
+                  onClick={() => {
+                    handleRemoveFriend();
+                    close();
+                  }}
+                  disabled={isRemovingFriend}
+                >
+                  <UserMinusIcon className="size-4" />
+                  {isRemovingFriend ? "Removing..." : "Remove from friend list"}
+                </button>
+              </div>
             )}
           </ToggleDropdown>
           <div className="min-w-0 flex-1 overflow-hidden">
