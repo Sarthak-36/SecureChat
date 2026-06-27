@@ -7,6 +7,7 @@ import {
   analyzeLinkContent,
   analyzeTextContent,
   describeImageContent,
+  isUsefulImageDescription,
   CURRENT_TEXT_AI_MODELS,
   summarizeTextContent,
   translateTextToEnglish,
@@ -121,7 +122,7 @@ const isTextCheckCacheCompatible = (cachedRow) => {
 
 const isImageDescriptionCacheCompatible = (cachedRow) =>
   Boolean(
-    cachedRow?.payload?.description?.descriptionText &&
+    isUsefulImageDescription(cachedRow?.payload?.description?.descriptionText || "") &&
       cachedRow?.payload?.description?.models?.imageDescription
   );
 

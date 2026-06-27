@@ -26,14 +26,17 @@ export const DEFAULT_SUMMARIZATION_PROVIDER = process.env.HF_SUMMARIZATION_PROVI
 export const DEFAULT_IMAGE_DESCRIPTION_MODEL =
     process.env.HF_IMAGE_DESCRIPTION_MODEL || "Salesforce/blip-image-captioning-base";
 export const FALLBACK_IMAGE_DESCRIPTION_MODEL =
-    process.env.HF_IMAGE_DESCRIPTION_FALLBACK_MODEL || "Salesforce/blip-image-captioning-large";
+    process.env.HF_IMAGE_DESCRIPTION_FALLBACK_MODEL || "nlpconnect/vit-gpt2-image-captioning";
 export const DEFAULT_IMAGE_DESCRIPTION_VLM_MODEL =
     process.env.HF_IMAGE_DESCRIPTION_VLM_MODEL || "CohereLabs/aya-vision-32b:cohere";
-export const IMAGE_DESCRIPTION_TIMEOUT_MS = Number(process.env.IMAGE_DESCRIPTION_TIMEOUT_MS || 15000);
+export const FALLBACK_IMAGE_DESCRIPTION_VLM_MODEL =
+    process.env.HF_IMAGE_DESCRIPTION_VLM_FALLBACK_MODEL || "zai-org/GLM-4.5V:zai-org";
+export const DEFAULT_IMAGE_DESCRIPTION_PROVIDER = process.env.HF_IMAGE_DESCRIPTION_PROVIDER || "auto";
+export const IMAGE_DESCRIPTION_TIMEOUT_MS = Number(process.env.IMAGE_DESCRIPTION_TIMEOUT_MS || 45000);
 export const ENABLE_LEGACY_IMAGE_DESCRIPTION_MODELS =
     process.env.ENABLE_LEGACY_IMAGE_DESCRIPTION_MODELS === "true";
 export const IMAGE_DESCRIPTION_INLINE_IMAGE_MAX_BYTES = Number(
-    process.env.IMAGE_DESCRIPTION_INLINE_IMAGE_MAX_BYTES || 350000,
+    process.env.IMAGE_DESCRIPTION_INLINE_IMAGE_MAX_BYTES || 180000,
 );
 export const DEFAULT_LANGUAGE_DETECTION_MODEL =
     process.env.HF_LANGUAGE_DETECTION_MODEL || "papluca/xlm-roberta-base-language-detection";

@@ -1,39 +1,16 @@
 import sharp from "sharp";
 
 import {
-  DEFAULT_IMAGE_DESCRIPTION_MODEL,
-  DEFAULT_IMAGE_DESCRIPTION_PROVIDER,
-  DEFAULT_IMAGE_DESCRIPTION_VLM_MODEL,
-  ENABLE_LEGACY_IMAGE_DESCRIPTION_MODELS,
-  FALLBACK_IMAGE_DESCRIPTION_MODEL,
-  FALLBACK_IMAGE_DESCRIPTION_VLM_MODEL,
-  HF_CHAT_COMPLETIONS_URL,
-  IMAGE_DESCRIPTION_INLINE_IMAGE_MAX_BYTES,
-  IMAGE_DESCRIPTION_TIMEOUT_MS,
+    DEFAULT_IMAGE_DESCRIPTION_MODEL,
+    DEFAULT_IMAGE_DESCRIPTION_VLM_MODEL,
+    ENABLE_LEGACY_IMAGE_DESCRIPTION_MODELS,
+    FALLBACK_IMAGE_DESCRIPTION_MODEL,
+    HF_CHAT_COMPLETIONS_URL,
+    HF_DIRECT_INFERENCE_API_BASE_URL,
+    IMAGE_DESCRIPTION_INLINE_IMAGE_MAX_BYTES,
+    IMAGE_DESCRIPTION_TIMEOUT_MS,
 } from "./config.js";
-import { ensureInferenceConfigured, getInferenceClient, parseInferenceError } from "./provider.js";
-
-const LOW_QUALITY_IMAGE_DESCRIPTIONS = new Set([
-    "capture",
-    "image",
-    "photo",
-    "picture",
-    "snapshot",
-    "scene",
-]);
-
-export const isUsefulImageDescription = (descriptionText = "") => {
-    const normalized = descriptionText.trim().replace(/\s+/g, " ");
-    if (!normalized) return false;
-
-    const words = normalized.split(" ").filter(Boolean);
-    if (words.length >= 4) return true;
-    if (words.length === 1) {
-        return !LOW_QUALITY_IMAGE_DESCRIPTIONS.has(words[0].toLowerCase());
-    }
-
-    return normalized.length >= 24 && /[a-z]/i.test(normalized);
-};
+import { ensureInferenceConfigured, parseInferenceError } from "./provider.js";
 
 export const runImageToText = async ({ buffer, mimeType, model }) => {
     ensureInferenceConfigured();
@@ -47,17 +24,35 @@ export const runImageToText = async ({ buffer, mimeType, model }) => {
     const timeoutId = setTimeout(() => controller.abort(), IMAGE_DESCRIPTION_TIMEOUT_MS);
 
     try {
-        const payload = await getInferenceClient().imageToText({
-            model,
-            provider: DEFAULT_IMAGE_DESCRIPTION_PROVIDER,
-            data: new Blob([buffer], { type: mimeType || "application/octet-stream" }),
-        }, {
+        const response = await fetch(`${HF_DIRECT_INFERENCE_API_BASE_URL}/${model}`, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
+                "Content-Type": mimeType || "application/octet-stream",
+                Accept: "application/json",
+            },
+            body: buffer,
             signal: controller.signal,
-            retry_on_error: true,
         });
+
+        if (!response.ok) {
+            const errorMessage = await parseInferenceError(response);
+            const error = new Error(`Inference request failed for ${model}: ${errorMessage}`);
+            error.statusCode = response.status;
+            error.publicMessage = "Image description could not analyze this image right now";
+            throw error;
+        }
+
+        // const payload = await response.json();
+        const raw = await response.text();
+
+        // console.log(raw);
+
+        const payload = JSON.parse(raw);
+
         const descriptionText = parseDescriptionText(payload);
 
-        if (!isUsefulImageDescription(descriptionText)) {
+        if (!descriptionText) {
             const error = new Error(
                 `Unexpected image description response: ${JSON.stringify(payload)}`,
             );
@@ -68,26 +63,18 @@ export const runImageToText = async ({ buffer, mimeType, model }) => {
 
         return {
             descriptionText,
-            provider: DEFAULT_IMAGE_DESCRIPTION_PROVIDER,
+            provider: "hf-inference",
         };
     } catch (error) {
-        const isTimeout = error.name === "AbortError";
-        const providerError =
-            error.providerError ||
-            error.cause?.code ||
-            error.cause?.message ||
-            error.message ||
-            "Unknown inference error";
         const wrappedError = new Error(
-            `Image description request failed for ${model}: ${
-                isTimeout ? `Timed out after ${IMAGE_DESCRIPTION_TIMEOUT_MS}ms` : providerError
-            }`,
+            `Image description request failed for ${model}: ${error.message}`,
         );
         wrappedError.statusCode = error.response?.status || error.statusCode || 502;
         wrappedError.publicMessage = "Image description could not analyze this image right now";
-        wrappedError.providerError = isTimeout
-            ? `Timed out after ${IMAGE_DESCRIPTION_TIMEOUT_MS}ms`
-            : providerError;
+        wrappedError.providerError =
+            error.name === "AbortError"
+                ? `Timed out after ${IMAGE_DESCRIPTION_TIMEOUT_MS}ms`
+                : error.message || "Unknown inference error";
         throw wrappedError;
     } finally {
         clearTimeout(timeoutId);
@@ -96,39 +83,12 @@ export const runImageToText = async ({ buffer, mimeType, model }) => {
 
 export const runVisionChatImageDescription = async ({ attachmentUrl, buffer, mimeType, model }) => {
     ensureInferenceConfigured();
-
-    const extractCaptionFromReasoning = (reasoningText = "") => {
-        const trimmed = reasoningText.trim();
-        if (!trimmed) return "";
-
-        const sentences = trimmed
-            .split(/(?<=[.!?])\s+/)
-            .map((sentence) => sentence.trim())
-            .filter(Boolean);
-
-        for (let index = sentences.length - 1; index >= 0; index -= 1) {
-            const sentence = sentences[index]
-                .replace(/^So (the sentence should|the caption should|the sentence is)\s*/i, "")
-                .replace(/^Let me phrase it:\s*/i, "")
-                .replace(/^Caption:\s*/i, "")
-                .trim();
-
-            if (
-                sentence &&
-                !/^(got it|let'?s see|wait|so i need|let me check|the user wants)/i.test(sentence)
-            ) {
-                return sentence;
-            }
-        }
-
-        return "";
-    };
-
+    console.log("Entered runVisionChatImageDescription");
     const buildInlineImageDataUrl = async () => {
         const candidates = [
+            { width: 768, quality: 60 },
             { width: 640, quality: 50 },
             { width: 512, quality: 40 },
-            { width: 384, quality: 35 },
         ];
 
         for (const candidate of candidates) {
@@ -140,33 +100,30 @@ export const runVisionChatImageDescription = async ({ attachmentUrl, buffer, mim
                     fit: "inside",
                     withoutEnlargement: true,
                 })
-                .jpeg({ quality: candidate.quality, mozjpeg: true })
+                .webp({ quality: candidate.quality })
                 .toBuffer();
 
             if (optimizedBuffer.length <= IMAGE_DESCRIPTION_INLINE_IMAGE_MAX_BYTES) {
-                return `data:image/jpeg;base64,${optimizedBuffer.toString("base64")}`;
+                return `data:image/webp;base64,${optimizedBuffer.toString("base64")}`;
             }
         }
 
         const fallbackBuffer = await sharp(buffer)
             .rotate()
             .resize({
-                width: 320,
-                height: 320,
+                width: 384,
+                height: 384,
                 fit: "inside",
                 withoutEnlargement: true,
             })
-            .jpeg({ quality: 30, mozjpeg: true })
+            .webp({ quality: 35 })
             .toBuffer();
 
-        return `data:image/jpeg;base64,${fallbackBuffer.toString("base64")}`;
+        return `data:image/webp;base64,${fallbackBuffer.toString("base64")}`;
     };
 
-    const canUseRemoteUrl =
-        typeof attachmentUrl === "string" && /^https:\/\//i.test(attachmentUrl);
-    const imageReference = canUseRemoteUrl
-        ? attachmentUrl
-        : await buildInlineImageDataUrl();
+    const canUseRemoteUrl = typeof attachmentUrl === "string" && /^https:\/\//i.test(attachmentUrl);
+    const imageReference = canUseRemoteUrl ? attachmentUrl : await buildInlineImageDataUrl();
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), IMAGE_DESCRIPTION_TIMEOUT_MS);
 
@@ -186,7 +143,7 @@ export const runVisionChatImageDescription = async ({ attachmentUrl, buffer, mim
                         content: [
                             {
                                 type: "text",
-                                text: "What is visible in this image? Respond with only one sentence and no reasoning.",
+                                text: "Describe this image in one concise sentence. Mention the main subject and any important visible details.",
                             },
                             {
                                 type: "image_url",
@@ -212,24 +169,19 @@ export const runVisionChatImageDescription = async ({ attachmentUrl, buffer, mim
         }
 
         const payload = await response.json();
-        const message = payload?.choices?.[0]?.message;
-        const content = message?.content;
-        const reasoningContent = message?.reasoning_content;
-        const directContent =
+        const content = payload?.choices?.[0]?.message?.content;
+        const descriptionText =
             typeof content === "string"
                 ? content.trim()
                 : Array.isArray(content)
                   ? content
-                      .map((item) => (typeof item?.text === "string" ? item.text.trim() : ""))
-                      .filter(Boolean)
-                      .join(" ")
-                      .trim()
+                        .map((item) => (typeof item?.text === "string" ? item.text.trim() : ""))
+                        .filter(Boolean)
+                        .join(" ")
+                        .trim()
                   : "";
-        const descriptionText =
-            directContent ||
-            extractCaptionFromReasoning(typeof reasoningContent === "string" ? reasoningContent : "");
 
-        if (!isUsefulImageDescription(descriptionText)) {
+        if (!descriptionText) {
             const error = new Error(`Unexpected vision chat response: ${JSON.stringify(payload)}`);
             error.statusCode = 502;
             error.publicMessage = "Image description returned an unexpected response";
@@ -256,45 +208,39 @@ export const runVisionChatImageDescription = async ({ attachmentUrl, buffer, mim
 };
 
 export async function describeImageContent({ buffer, mimeType, attachmentName, attachmentUrl }) {
-    const visionModels = [DEFAULT_IMAGE_DESCRIPTION_VLM_MODEL, FALLBACK_IMAGE_DESCRIPTION_VLM_MODEL].filter(
-        (model, index, allModels) => Boolean(model) && allModels.indexOf(model) === index,
-    );
     const candidateModels = ENABLE_LEGACY_IMAGE_DESCRIPTION_MODELS
         ? [DEFAULT_IMAGE_DESCRIPTION_MODEL, FALLBACK_IMAGE_DESCRIPTION_MODEL].filter(
               (model, index, allModels) => allModels.indexOf(model) === index,
           )
         : [];
     const attempts = [];
-    let usedModel = visionModels[0] || DEFAULT_IMAGE_DESCRIPTION_VLM_MODEL;
+    let usedModel = DEFAULT_IMAGE_DESCRIPTION_VLM_MODEL;
     let usedProvider = null;
     let descriptionText = null;
 
-    for (const model of visionModels) {
-        if (descriptionText) break;
-        try {
-            const result = await runVisionChatImageDescription({
-                attachmentUrl,
-                buffer,
-                mimeType,
-                model,
-            });
-            descriptionText = result.descriptionText;
-            usedModel = model;
-            usedProvider = result.provider;
-            attempts.push({
-                model,
-                status: "used",
-                provider: result.provider,
-                reason: null,
-            });
-        } catch (error) {
-            attempts.push({
-                model,
-                status: "failed",
-                provider: "hf-router",
-                reason: error.providerError || error.message,
-            });
-        }
+    try {
+        const result = await runVisionChatImageDescription({
+            attachmentUrl,
+            buffer,
+            mimeType,
+            model: DEFAULT_IMAGE_DESCRIPTION_VLM_MODEL,
+        });
+        descriptionText = result.descriptionText;
+        usedModel = DEFAULT_IMAGE_DESCRIPTION_VLM_MODEL;
+        usedProvider = result.provider;
+        attempts.push({
+            model: DEFAULT_IMAGE_DESCRIPTION_VLM_MODEL,
+            status: "used",
+            provider: result.provider,
+            reason: null,
+        });
+    } catch (error) {
+        attempts.push({
+            model: DEFAULT_IMAGE_DESCRIPTION_VLM_MODEL,
+            status: "failed",
+            provider: "hf-router",
+            reason: error.providerError || error.message,
+        });
     }
 
     for (const model of candidateModels) {
@@ -319,7 +265,7 @@ export async function describeImageContent({ buffer, mimeType, attachmentName, a
             attempts.push({
                 model,
                 status: "failed",
-                provider: DEFAULT_IMAGE_DESCRIPTION_PROVIDER,
+                provider: "hf-inference",
                 reason: error.providerError || error.message,
             });
         }
@@ -329,7 +275,7 @@ export async function describeImageContent({ buffer, mimeType, attachmentName, a
         const error = new Error(
             `Image description failed for all configured models: ${attempts
                 .map((attempt) => `${attempt.model}: ${attempt.reason || attempt.status}`)
-                .join(" | ")}`
+                .join(" | ")}`,
         );
         error.statusCode = 502;
         error.publicMessage = "Image description could not analyze this image right now";

@@ -38,7 +38,13 @@ export const parseInferenceError = async (response) => {
 
     try {
         const payload = JSON.parse(responseText);
-        return payload?.error || responseText;
+        if (typeof payload?.error === "string") {
+            return payload.error;
+        }
+        if (payload?.error) {
+            return JSON.stringify(payload.error);
+        }
+        return responseText;
     } catch {
         return responseText;
     }
